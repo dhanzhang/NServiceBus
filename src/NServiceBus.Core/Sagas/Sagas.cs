@@ -25,6 +25,13 @@
         /// </summary>
         protected override void Setup(FeatureConfigurationContext context)
         {
+            // Register the Saga related behavior for incoming messages
+            context.Pipeline.Register<AuditInvokedSagaBehavior.AuditInvokedSagaRegistration>();
+            context.Pipeline.Register<SagaPersistenceBehavior.SagaPersistenceRegistration>();
+
+            // Register the saga related behavior for outgoing messages
+            context.Pipeline.Register<SagaSendBehavior.SagaSendRegistration>();
+
             foreach (var t in context.Settings.GetAvailableTypes())
             {
                 if (IsSagaType(t))
@@ -49,7 +56,6 @@
 
             CreateAdditionalFindersAsNecessary(context);
         }
-
 
         internal static void ConfigureHowToFindSagaWithMessage(Type sagaType, PropertyInfo sagaProp, Type messageType, PropertyInfo messageProp)
         {
