@@ -6,35 +6,42 @@ namespace NServiceBus.Serializers.XML.Test
     using System.Xml;
     using MessageInterfaces.MessageMapper.Reflection;
 
-    public class SerializerFactory
+    class SerializerFactory
     {
-         public static XmlMessageSerializer Create<T>()
-         {
-             var types = new List<Type> {typeof (T)};
-             var mapper = new MessageMapper();
-             mapper.Initialize(types);
-             var serializer = new XmlMessageSerializer(mapper);
+        public static XmlMessageSerializer Create<T>(MessageMapper mapper = null)
+        {
+            var types = new List<Type>
+            {
+                typeof(T)
+            };
+            if (mapper == null)
+            {
+                mapper = new MessageMapper();
+            }
 
-             serializer.Initialize(types);
+            mapper.Initialize(types);
+            var serializer = new XmlMessageSerializer(mapper, new Conventions());
 
-             return serializer;
-         }
+            serializer.Initialize(types);
 
-         public static XmlMessageSerializer Create(params Type[] types)
-         {
-             var mapper = new MessageMapper();
-             mapper.Initialize(types);
-             var serializer = new XmlMessageSerializer(mapper);
+            return serializer;
+        }
 
-             serializer.Initialize(types);
+        public static XmlMessageSerializer Create(params Type[] types)
+        {
+            var mapper = new MessageMapper();
+            mapper.Initialize(types);
+            var serializer = new XmlMessageSerializer(mapper, new Conventions());
 
-             return serializer;
-         }
+            serializer.Initialize(types);
+
+            return serializer;
+        }
     }
 
     public class ExecuteSerializer
     {
-        public static T ForMessage<T>(Action<T> a) where T : class,new()
+        public static T ForMessage<T>(Action<T> a) where T : class, new()
         {
             var msg = new T();
             a(msg);
@@ -48,26 +55,24 @@ namespace NServiceBus.Serializers.XML.Test
             {
                 SerializerFactory.Create<T>().Serialize(message, stream);
                 stream.Position = 0;
-              
-                var msgArray = SerializerFactory.Create<T>().Deserialize(stream, new[]{message.GetType()});
-                return (T)msgArray[0];
 
+                var msgArray = SerializerFactory.Create<T>().Deserialize(stream, new[]
+                {
+                    message.GetType()
+                });
+                return (T) msgArray[0];
             }
         }
-
     }
 
-    public class Serializer
+    class Serializer
     {
-        string xmlResult;
-        XmlDocument xmlDocument;
-
         Serializer(string result)
         {
             xmlResult = result;
         }
 
-        public static Serializer Serialize<T>(Action<T> a) where T : class,new()
+        public static Serializer Serialize<T>(Action<T> a) where T : class, new()
         {
             var msg = new T();
             a(msg);
@@ -75,14 +80,13 @@ namespace NServiceBus.Serializers.XML.Test
             return ForMessage<T>(msg);
         }
 
-        public static Serializer ForMessage<T>(object message,Action<XmlMessageSerializer> config = null)
+        public static Serializer ForMessage<T>(object message, Action<XmlMessageSerializer> config = null)
         {
             using (var stream = new MemoryStream())
             {
                 var serializer = SerializerFactory.Create<T>();
-                    
-                if(config != null)
-                    config(serializer);
+
+                config?.Invoke(serializer);
 
 
                 serializer.Serialize(message, stream);
@@ -95,7 +99,7 @@ namespace NServiceBus.Serializers.XML.Test
 
         public Serializer AssertResultingXml(Func<XmlDocument, bool> check, string message)
         {
-            if(xmlDocument == null)
+            if (xmlDocument == null)
             {
                 xmlDocument = new XmlDocument();
 
@@ -105,16 +109,16 @@ namespace NServiceBus.Serializers.XML.Test
                 }
                 catch (Exception ex)
                 {
-                    
-                    throw new Exception("Failed to parse xml: " + xmlResult,ex);
+                    throw new Exception("Failed to parse xml: " + xmlResult, ex);
                 }
-                
-
             }
             if (!check(xmlDocument))
-              throw new Exception(string.Format("{0}, Offending XML: {1}",message, xmlResult));
+                throw new Exception($"{message}, Offending XML: {xmlResult}");
 
             return this;
         }
+
+        string xmlResult;
+        XmlDocument xmlDocument;
     }
 }

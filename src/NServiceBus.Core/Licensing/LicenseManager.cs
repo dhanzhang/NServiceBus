@@ -1,132 +1,192 @@
-namespace NServiceBus.Licensing
+namespace NServiceBus
 {
+    using System;
     using System.Diagnostics;
+#if NETSTANDARD
+    using System.Runtime.InteropServices;
+#endif
+    using System.Text;
     using System.Threading;
-    using System.Windows.Forms;
+    using System.Threading.Tasks;
     using Logging;
-    using Microsoft.Win32;
     using Particular.Licensing;
 
-    static class LicenseManager
+    class LicenseManager
     {
-        internal static bool HasLicenseExpired()
-        {
-            return license == null || LicenseExpirationChecker.HasLicenseExpired(license);
-        }
+        internal bool HasLicenseExpired => result?.License.HasExpired() ?? true;
 
-        internal static void InitializeLicenseText(string license)
+        internal void InitializeLicense(string licenseText, string licenseFilePath)
         {
-            licenseText = license;
-        }
+            var licenseSources = LicenseSources.GetLicenseSources(licenseText, licenseFilePath);
 
-        internal static void PromptUserForLicenseIfTrialHasExpired()
-        {
-            if (!(Debugger.IsAttached && SystemInformation.UserInteractive))
+            result = ActiveLicense.Find("NServiceBus", licenseSources);
+
+            LogFindResults(result);
+
+            var licenseStatus = result.License.GetLicenseStatus();
+            LogLicenseStatus(licenseStatus, Logger, result.License);
+
+            if (licenseStatus == LicenseStatus.InvalidDueToExpiredTrial)
             {
-                //We only prompt user if user is in debugging mode and we are running in interactive mode
+                OpenTrialExtensionPage();
+            }
+        }
+
+        internal void LogLicenseStatus(LicenseStatus licenseStatus, ILog logger, License license)
+        {
+            switch (licenseStatus)
+            {
+                case LicenseStatus.Valid:
+                    break;
+                case LicenseStatus.ValidWithExpiredUpgradeProtection:
+                    logger.Warn("Upgrade protection expired. In order for us to continue to provide you with support and new versions of the Particular Service Platform, please extend your upgrade protection by visiting http://go.particular.net/upgrade-protection-expired");
+                    break;
+                case LicenseStatus.ValidWithExpiringTrial:
+                    logger.WarnFormat("Trial license expiring {0}. To continue using the Particular Service Platform, please extend your trial or purchase a license by visiting http://go.particular.net/trial-expiring", GetRemainingDaysString(license.GetDaysUntilLicenseExpires()));
+                    break;
+                case LicenseStatus.ValidWithExpiringSubscription:
+                    logger.WarnFormat("Platform license expiring {0}. To continue using the Particular Service Platform, please extend your license by visiting http://go.particular.net/license-expiring", GetRemainingDaysString(license.GetDaysUntilLicenseExpires()));
+                    break;
+                case LicenseStatus.ValidWithExpiringUpgradeProtection:
+                    logger.WarnFormat("Upgrade protection expiring {0}. In order for us to continue to provide you with support and new versions of the Particular Service Platform, please extend your upgrade protection by visiting http://go.particular.net/upgrade-protection-expiring", GetRemainingDaysString(license.GetDaysUntilUpgradeProtectionExpires()));
+                    break;
+                case LicenseStatus.InvalidDueToExpiredTrial:
+                    logger.Error("Trial license expired. To continue using the Particular Service Platform, please extend your trial or purchase a license by visiting http://go.particular.net/trial-expired");
+                    break;
+                case LicenseStatus.InvalidDueToExpiredSubscription:
+                    logger.Error("Platform license expired. To continue using the Particular Service Platform, please extend your license by visiting http://go.particular.net/license-expired");
+                    break;
+                case LicenseStatus.InvalidDueToExpiredUpgradeProtection:
+                    logger.Error("Upgrade protection expired. In order for us to continue to provide you with support and new versions of the Particular Service Platform, please extend your upgrade protection by visiting http://go.particular.net/upgrade-protection-expired");
+                    break;
+            }
+
+            string GetRemainingDaysString(int? remainingDays)
+            {
+                switch (remainingDays)
+                {
+                    case null:
+                        return "soon";
+                    case 0:
+                        return "today";
+                    case 1:
+                        return "in 1 day";
+                    default:
+                        return $"in {remainingDays} days";
+                }
+            }
+        }
+
+        static void LogFindResults(ActiveLicenseFindResult result)
+        {
+            var report = new StringBuilder();
+
+            if (DebugLoggingEnabled)
+            {
+                report.AppendLine("Looking for license in the following locations:");
+
+                foreach (var item in result.Report)
+                {
+                    report.AppendLine(item);
+                }
+
+                Logger.Debug(report.ToString());
+            }
+            else
+            {
+                foreach (var item in result.SelectedLicenseReport)
+                {
+                    report.AppendLine(item);
+                }
+
+                Logger.Info(report.ToString());
+            }
+
+#if REGISTRYLICENSESOURCE
+            if (result.Location.StartsWith("HKEY_"))
+            {
+                Logger.Warn("Reading license information from the registry has been deprecated and will be removed in version 8.0. See the documentation for more details.");
+            }
+#endif
+
+#if APPCONFIGLICENSESOURCE
+            if (result.Location.StartsWith("app config"))
+            {
+                Logger.Warn("Reading license information from the app config file has been deprecated and will be removed in version 8.0. See the documentation for more details.");
+            }
+#endif
+        }
+
+        void OpenTrialExtensionPage()
+        {
+            var version = GitFlowVersion.MajorMinorPatch;
+            var extendedTrial = result.License.IsExtendedTrial ? "1" : "0";
+            var platform = GetPlatformCode();
+            var url = $"https://particular.net/license/nservicebus?v={version}&t={extendedTrial}&p={platform}";
+
+            if (!(Debugger.IsAttached && Environment.UserInteractive))
+            {
+                Logger.WarnFormat("To extend your trial license, visit: {0}", url);
+
                 return;
             }
 
-            bool createdNew;
-            using (new Mutex(true, string.Format("NServiceBus-{0}", GitFlowVersion.MajorMinor), out createdNew))
+            using (var mutex = new Mutex(true, @"Global\NServiceBusLicensing", out var acquired))
             {
-                if (!createdNew)
+                if (acquired)
                 {
-                    //Dialog already displaying for this software version by another process, so we just use the already assigned license.
-                    return;
-                }
-
-                if (license == null || LicenseExpirationChecker.HasLicenseExpired(license))
-                {
-                    var licenseProvidedByUser = LicenseExpiredFormDisplayer.PromptUserForLicense(license);
-
-                    if (licenseProvidedByUser != null)
+                    try
                     {
-                        license = licenseProvidedByUser;
+                        Logger.WarnFormat("Opening browser to: {0}", url);
+
+                        var opened = Browser.TryOpen(url);
+
+                        if (!opened)
+                        {
+                            Logger.WarnFormat("Unable to open browser. To extend your trial license, visit: {0}", url);
+                        }
+
+                        Task.Delay(TimeSpan.FromSeconds(5)).GetAwaiter().GetResult();
+                    }
+                    finally
+                    {
+                        mutex.ReleaseMutex();
                     }
                 }
+                else
+                {
+                    Task.Delay(TimeSpan.FromSeconds(5)).GetAwaiter().GetResult();
+                }
             }
         }
 
-        static License GetTrialLicense()
+#if NETSTANDARD
+        string GetPlatformCode()
         {
-            var trialStartDate = TrialStartDateStore.GetTrialStartDate();
-            var trialLicense = License.TrialLicense(trialStartDate);
-
-            //Check trial is still valid
-            if (LicenseExpirationChecker.HasLicenseExpired(trialLicense))
+            if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
             {
-                Logger.WarnFormat("Trial for the Particular Service Platform has expired");
-            }
-            else
-            {
-                var message = string.Format("Trial for Particular Service Platform is still active, trial expires on {0}. Configuring NServiceBus to run in trial mode.", trialLicense.ExpirationDate.Value.ToLocalTime().ToShortDateString());
-                Logger.Info(message);
+                return "windows";
             }
 
-            return trialLicense;
+            if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
+            {
+                return "linux";
+            }
+
+            if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
+            {
+                return "macos";
+            }
+
+            return "unknown";
         }
+#else
+        string GetPlatformCode() => "windows";
+#endif
 
-        internal static void InitializeLicense()
-        {
-            //only do this if not been configured by the fluent API
-            if (licenseText == null)
-            {
-                licenseText = GetExistingLicense();
-            }
+        ActiveLicenseFindResult result;
 
-            if (string.IsNullOrWhiteSpace(licenseText))
-            {
-                license = GetTrialLicense();
-                return;
-            }
-
-
-            LicenseVerifier.Verify(licenseText);
-
-            var foundLicense = LicenseDeserializer.Deserialize(licenseText);
-
-            if (LicenseExpirationChecker.HasLicenseExpired(foundLicense))
-            {
-                Logger.Fatal(" You can renew it at http://particular.net/licensing.");
-                return;
-            }
-
-            if (foundLicense.UpgradeProtectionExpiration != null)
-            {
-                Logger.InfoFormat("UpgradeProtectionExpiration: {0}", foundLicense.UpgradeProtectionExpiration);
-            }
-            else
-            {
-                Logger.InfoFormat("Expires on {0}", foundLicense.ExpirationDate);
-            }
-
-            license = foundLicense;
-        }
-
-        static string GetExistingLicense()
-        {
-            string existingLicense;
-
-            //look in HKCU
-            if (UserSidChecker.IsNotSystemSid() && new RegistryLicenseStore().TryReadLicense(out existingLicense))
-            {
-                return existingLicense;
-            }
-
-            //look in HKLM
-            if (new RegistryLicenseStore(Registry.LocalMachine).TryReadLicense(out existingLicense))
-            {
-                return existingLicense;
-            }
-
-            return LicenseLocationConventions.TryFindLicenseText();
-        }
-
-        static ILog Logger = LogManager.GetLogger(typeof(LicenseManager));
-        static string licenseText;
-        static License license;
-
-
+        static readonly ILog Logger = LogManager.GetLogger(typeof(LicenseManager));
+        static readonly bool DebugLoggingEnabled = Logger.IsDebugEnabled;
     }
 }

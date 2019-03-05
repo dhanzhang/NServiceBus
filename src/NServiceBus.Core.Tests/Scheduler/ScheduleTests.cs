@@ -1,64 +1,94 @@
 ﻿namespace NServiceBus.Scheduling.Tests
 {
     using System;
-    using System.Linq;
-    using System.Reflection;
     using System.Threading.Tasks;
-    using Core.Tests;
-    using Core.Tests.Fakes;
     using NUnit.Framework;
+    using Testing;
 
     [TestFixture]
     public class ScheduleTests
     {
-        private const string ACTION_NAME = "my action";
-        private FuncBuilder _builder = new FuncBuilder();
-        private FakeBus _bus = new FakeBus();
-
-        private readonly InMemoryScheduledTaskStorage _taskStorage = new InMemoryScheduledTaskStorage();        
-
         [SetUp]
         public void SetUp()
         {
-            Configure.With(o=>o.AssembliesToScan(new Assembly[0]));
-            Configure.Instance.Builder = _builder;
-
-            _builder.Register<IBus>(() => _bus);
-            _builder.Register<IScheduledTaskStorage>(() => _taskStorage);
-            _builder.Register<IScheduler>(() => new DefaultScheduler(_bus, _taskStorage));
+            scheduler = new DefaultScheduler();
+            session = new FakeMessageSession(scheduler);
         }
 
         [Test]
-        public void When_scheduling_an_action_with_a_name_the_task_should_get_that_name()
+        public async Task When_scheduling_an_action_with_a_name_the_task_should_get_that_name()
         {
-            Schedule.Every(TimeSpan.FromMinutes(5)).Action(ACTION_NAME, () => { });
-            Assert.That(EnsureThatNameExists(ACTION_NAME));
+            var wasCalled = true;
+            await session.ScheduleEvery(TimeSpan.FromMinutes(5), ACTION_NAME, c =>
+            {
+                wasCalled = true;
+                return TaskEx.CompletedTask;
+            });
+
+            Assert.IsTrue(wasCalled);
+            Assert.AreEqual(ACTION_NAME, session.ScheduledDefinition.Name);
         }
 
         [Test]
-        public void When_scheduling_an_action_without_a_name_the_task_should_get_the_DeclaringType_as_name()
+        public async Task When_scheduling_an_action_without_a_name_the_task_should_get_the_DeclaringType_as_name()
         {
-            Schedule.Every(TimeSpan.FromMinutes(5)).Action(() => {  });
-            Assert.That(EnsureThatNameExists("ScheduleTests"));
+            var wasCalled = true;
+            await session.ScheduleEvery(TimeSpan.FromMinutes(5), c =>
+            {
+                wasCalled = true;
+                return TaskEx.CompletedTask;
+            });
+
+            Assert.IsTrue(wasCalled);
+            Assert.AreEqual(nameof(ScheduleTests), session.ScheduledDefinition.Name);
         }
 
-        [Test]
-        public void Schedule_tasks_using_multiple_threads()
+        DefaultScheduler scheduler;
+        FakeMessageSession session;
+        const string ACTION_NAME = "my action";
+
+        class FakeMessageSession : IMessageSession
         {
-            Parallel.For(0, 20, i => Schedule.Every(TimeSpan.FromSeconds(1)).Action(() => { }));
-            
-            _bus.DeferWasCalled = 0;
+            public FakeMessageSession(DefaultScheduler defaultScheduler)
+            {
+                this.defaultScheduler = defaultScheduler;
+            }
 
-            Parallel.ForEach(_taskStorage.Tasks,
-                              t => new ScheduledTaskMessageHandler(new DefaultScheduler(_bus, _taskStorage)).Handle(
-                                  new Messages.ScheduledTask { TaskId = t.Key }));
+            public TaskDefinition ScheduledDefinition { get; private set; }
 
-            Assert.That(_bus.DeferWasCalled, Is.EqualTo(20));
-        }
+            public Task Send(object message, SendOptions options)
+            {
+                ScheduledDefinition = options.Context.Get<ScheduleBehavior.State>().TaskDefinition;
+                defaultScheduler.Schedule(ScheduledDefinition);
+                return defaultScheduler.Start(ScheduledDefinition.Id, new TestablePipelineContext());
+            }
 
-        private bool EnsureThatNameExists(string name)
-        {
-            return _taskStorage.Tasks.Any(task => task.Value.Name.Equals(name));
+            public Task Send<T>(Action<T> messageConstructor, SendOptions options)
+            {
+                throw new NotImplementedException();
+            }
+
+            public Task Publish(object message, PublishOptions options)
+            {
+                throw new NotImplementedException();
+            }
+
+            public Task Publish<T>(Action<T> messageConstructor, PublishOptions publishOptions)
+            {
+                throw new NotImplementedException();
+            }
+
+            public Task Subscribe(Type eventType, SubscribeOptions options)
+            {
+                throw new NotImplementedException();
+            }
+
+            public Task Unsubscribe(Type eventType, UnsubscribeOptions options)
+            {
+                throw new NotImplementedException();
+            }
+
+            readonly DefaultScheduler defaultScheduler;
         }
     }
 }

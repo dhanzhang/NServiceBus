@@ -1,6 +1,5 @@
 ﻿namespace NServiceBus.Serializers.XML.Test
 {
-    using System;
     using System.Collections;
     using System.Collections.Generic;
     using System.Xml.Serialization;
@@ -15,15 +14,16 @@
             var result = ExecuteSerializer.ForMessage<MessageWithXmlIgnore>(m3 =>
             {
                 m3.FirstName = "John";
-                m3.LastName = "Simons";
+                m3.LastName = "Smith";
+#pragma warning disable DE0006
                 m3.List = new ArrayList();
+#pragma warning restore DE0006
                 m3.GenericList = new List<string>();
             });
 
             Assert.AreEqual("John", result.FirstName);
         }
 
-        [Serializable]
         public class MessageWithXmlIgnore : MessageWithXmlIgnoreBase
         {
             [XmlIgnore]
@@ -32,7 +32,6 @@
             public string FirstName { get; set; }
         }
 
-        [Serializable]
         public class MessageWithXmlIgnoreBase : IMessage
         {
             [XmlIgnore]

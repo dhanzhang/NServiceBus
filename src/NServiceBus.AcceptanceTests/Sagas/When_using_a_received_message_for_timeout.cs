@@ -1,112 +1,76 @@
 ﻿namespace NServiceBus.AcceptanceTests.Sagas
 {
     using System;
-    using EndpointTemplates;
+    using System.Threading.Tasks;
     using AcceptanceTesting;
+    using EndpointTemplates;
+    using Features;
     using NUnit.Framework;
-    using PubSub;
-    using Saga;
 
     public class When_using_a_received_message_for_timeout : NServiceBusAcceptanceTest
     {
         [Test]
-        public void Timeout_should_be_received_after_expiration()
+        public async Task Timeout_should_be_received_after_expiration()
         {
-            Scenario.Define(() => new Context {Id = Guid.NewGuid()})
-                    .WithEndpoint<SagaEndpoint>(b =>
-                    {
-                        b.Given((bus, context) =>
-                        {
-                            if (context.HasNativePubSubSupport)
-                            {
-                                bus.SendLocal(new StartSagaMessage { SomeId = context.Id });
-                            }
-                            else
-                            {
-                                SubscriptionBehavior.OnEndpointSubscribed(s => bus.SendLocal(new StartSagaMessage { SomeId = context.Id }));
-                            }
+            var context = await Scenario.Define<Context>()
+                .WithEndpoint<ReceiveMessageForTimeoutEndpoint>(g => g.When(session => session.SendLocal(new StartSagaMessage
+                {
+                    SomeId = Guid.NewGuid()
+                })))
+                .Done(c => c.TimeoutReceived)
+                .Run();
 
-                        });
-
-                        b.When(context => context.StartSagaMessageReceived,
-                            (bus, context) => bus.Publish(new SomeEvent { SomeId = context.Id }));
-
-                    })
-                    .Done(c => c.TimeoutReceived)
-                    .Run();
+            Assert.True(context.TimeoutReceived);
+            Assert.AreEqual(1, context.HandlerCalled);
         }
 
         public class Context : ScenarioContext
         {
-            public Guid Id { get; set; }
-
-            public bool StartSagaMessageReceived { get; set; }
-
-            public bool SomeEventReceived { get; set; }
-
             public bool TimeoutReceived { get; set; }
+            public int HandlerCalled { get; set; }
         }
 
-        public class SagaEndpoint : EndpointConfigurationBuilder
+        public class ReceiveMessageForTimeoutEndpoint : EndpointConfigurationBuilder
         {
-            public SagaEndpoint()
+            public ReceiveMessageForTimeoutEndpoint()
             {
-                EndpointSetup<DefaultServer>()
-                    .AddMapping<SomeEvent>(typeof (SagaEndpoint));
+                EndpointSetup<DefaultServer>(config => config.EnableFeature<TimeoutManager>());
             }
 
-            public class TestSaga : Saga<TestSagaData>, IAmStartedByMessages<StartSagaMessage>,
-                                    IHandleMessages<SomeEvent>, IHandleTimeouts<SomeEvent>
+            public class TestSaga01 : Saga<TestSagaData01>, IAmStartedByMessages<StartSagaMessage>, IHandleTimeouts<StartSagaMessage>
             {
-                public Context Context { get; set; }
+                public Context TestContext { get; set; }
 
-                public void Handle(StartSagaMessage message)
+                public Task Handle(StartSagaMessage message, IMessageHandlerContext context)
                 {
-                    Data.SomeId = message.SomeId;
-                    Context.StartSagaMessageReceived = true;
+                    TestContext.HandlerCalled++;
+                    return RequestTimeout(context, TimeSpan.FromMilliseconds(100), message);
                 }
 
-                protected override void ConfigureHowToFindSaga(SagaPropertyMapper<TestSagaData> mapper)
+                public Task Timeout(StartSagaMessage message, IMessageHandlerContext context)
+                {
+                    MarkAsComplete();
+                    TestContext.TimeoutReceived = true;
+                    return Task.FromResult(0);
+                }
+
+                protected override void ConfigureHowToFindSaga(SagaPropertyMapper<TestSagaData01> mapper)
                 {
                     mapper.ConfigureMapping<StartSagaMessage>(m => m.SomeId)
                         .ToSaga(s => s.SomeId);
-                    mapper.ConfigureMapping<SomeEvent>(m => m.SomeId)
-                        .ToSaga(s => s.SomeId);
                 }
-
-                public void Handle(SomeEvent message)
-                {
-                    RequestTimeout(TimeSpan.FromMilliseconds(100), message);
-                    Context.SomeEventReceived = true;
-                }
-
-                public void Timeout(SomeEvent message)
-                {
-                    Context.TimeoutReceived = true;
-                    MarkAsComplete();
-                }
-
             }
 
-            public class TestSagaData : IContainSagaData
+            public class TestSagaData01 : IContainSagaData
             {
+                public virtual Guid SomeId { get; set; }
                 public virtual Guid Id { get; set; }
                 public virtual string Originator { get; set; }
                 public virtual string OriginalMessageId { get; set; }
-
-                [Unique]
-                public virtual Guid SomeId { get; set; }
             }
         }
 
-        [Serializable]
         public class StartSagaMessage : ICommand
-        {
-            public Guid SomeId { get; set; }
-        }
-
-        [Serializable]
-        public class SomeEvent : IEvent
         {
             public Guid SomeId { get; set; }
         }

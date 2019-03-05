@@ -1,35 +1,44 @@
 ﻿namespace NServiceBus.Scheduling.Tests
 {
     using System;
-    using Core.Tests.Fakes;
+    using System.Linq;
     using NUnit.Framework;
+    using Testing;
 
     [TestFixture]
     public class ScheduledTaskMessageHandlerTests
     {
-        private FakeBus _bus = new FakeBus();
-        private IScheduledTaskStorage _taskStorage = new InMemoryScheduledTaskStorage();
-        private IScheduler _scheduler;
-        private ScheduledTaskMessageHandler _handler;
-
-        private Guid _taskId;
+        TestableMessageHandlerContext handlingContext = new TestableMessageHandlerContext();
+        DefaultScheduler scheduler;
+        ScheduledTaskMessageHandler handler;
+        Guid taskId;
 
         [SetUp]
         public void SetUp()
         {
-            _scheduler = new DefaultScheduler(_bus, _taskStorage);
-            _handler = new ScheduledTaskMessageHandler(_scheduler);
+            scheduler = new DefaultScheduler();
+            handler = new ScheduledTaskMessageHandler(scheduler);
 
-            var task = new ScheduledTask{Task = () => { }};
-            _taskId = task.Id;
-            _scheduler.Schedule(task);
+            var task = new TaskDefinition
+            {
+                Every = TimeSpan.FromSeconds(5),
+                Task = c => TaskEx.CompletedTask
+            };
+            taskId = task.Id;
+            scheduler.Schedule(task);
         }
 
         [Test]
         public void When_a_scheduledTask_message_is_handled_the_task_should_be_defer()
         {
-            _handler.Handle(new Messages.ScheduledTask{TaskId = _taskId});
-            Assert.That(((Messages.ScheduledTask)_bus.DeferMessages[0]).TaskId, Is.EqualTo(_taskId));
+            handler.Handle(new ScheduledTask
+            {
+                Every = TimeSpan.FromSeconds(5),
+                TaskId = taskId
+            }, handlingContext);
+
+            var deferredMessage = handlingContext.SentMessages.First(message => message.Options.GetDeliveryDelay().HasValue).Message<ScheduledTask>();
+            Assert.That(deferredMessage.TaskId, Is.EqualTo(taskId));
         }
     }
 }

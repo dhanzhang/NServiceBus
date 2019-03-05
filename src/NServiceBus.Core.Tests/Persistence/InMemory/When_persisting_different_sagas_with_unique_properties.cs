@@ -1,24 +1,32 @@
 ﻿namespace NServiceBus.SagaPersisters.InMemory.Tests
 {
     using System;
-    using NServiceBus.InMemory.SagaPersister;
+    using System.Threading.Tasks;
+    using Extensibility;
     using NUnit.Framework;
 
     [TestFixture]
-    public class When_persisting_different_sagas_with_unique_properties
+    class When_persisting_different_sagas_with_unique_properties
     {
         [Test]
-        public void  It_should_persist_successfully()
+        public async Task It_should_persist_successfully()
         {
-            var saga1 = new SagaWithTwoUniqueProperties { Id = Guid.NewGuid(), UniqueString = "whatever", UniqueInt = 5 };
-            var saga2 = new AnotherSagaWithTwoUniqueProperties { Id = Guid.NewGuid(), UniqueString = "whatever", UniqueInt = 5 };
-            var saga3 = new SagaWithUniqueProperty {Id = Guid.NewGuid(), UniqueString = "whatever"};
-            
-            var inMemorySagaPersister = new InMemorySagaPersister();
+             var saga1 = new SagaWithUniquePropertyData
+            {
+                Id = Guid.NewGuid(),
+                UniqueString = "whatever"
+            };
+            var saga2 = new AnotherSagaWithUniquePropertyData
+            {
+                Id = Guid.NewGuid(),
+                UniqueString = "whatever"
+            };
 
-            inMemorySagaPersister.Save(saga1);
-            inMemorySagaPersister.Save(saga2);
-            inMemorySagaPersister.Save(saga3);
+            var persister = new InMemorySagaPersister();
+            var transaction = new InMemorySynchronizedStorageSession();
+            await persister.Save(saga1, SagaMetadataHelper.GetMetadata<SagaWithUniqueProperty>(saga1), transaction, new ContextBag());
+            await persister.Save(saga2, SagaMetadataHelper.GetMetadata<AnotherSagaTwoUniqueProperty>(saga2), transaction, new ContextBag());
+            await transaction.CompleteAsync();
         }
     }
 }

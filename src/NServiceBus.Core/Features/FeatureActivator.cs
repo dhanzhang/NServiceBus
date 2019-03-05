@@ -3,125 +3,21 @@ namespace NServiceBus.Features
     using System;
     using System.Collections.Generic;
     using System.Linq;
-    using System.Text;
-    using Config;
-    using Logging;
+    using System.Threading.Tasks;
     using ObjectBuilder;
+    using Pipeline;
     using Settings;
-
-    /// <summary>
-    /// Provides diagnostics data about <see cref="Feature"/>s.
-    /// </summary>
-    public class FeaturesReport
-    {
-        readonly IList<FeatureDiagnosticData> data;
-
-        internal FeaturesReport(IEnumerable<FeatureDiagnosticData> data)
-        {
-            this.data = data.ToList().AsReadOnly();
-        }
-
-        /// <summary>
-        /// List of <see cref="Feature"/>s diagnostic data.
-        /// </summary>
-        public IList<FeatureDiagnosticData> Features
-        {
-            get { return data; }
-        }
-    }
-
-    /// <summary>
-    /// <see cref="Feature"/> diagnostics data.
-    /// </summary>
-    public class FeatureDiagnosticData
-    {
-        /// <summary>
-        /// Gets the <see cref="Feature"/> name.
-        /// </summary>
-        public string Name { get; internal set; }
-        
-        /// <summary>
-        /// Gets whether <see cref="Feature"/> is set to be enabled by default.
-        /// </summary>
-        public bool EnabledByDefault { get; internal set; }
-        
-        /// <summary>
-        /// Gets the status of the <see cref="Feature"/>.
-        /// </summary>
-        public bool Active { get; internal set; }
-        
-        /// <summary>
-        /// Gets whether all prerequisites are fulfilled for this <see cref="Feature"/>.
-        /// </summary>
-        public bool PrerequisitesFulfilled { get; internal set; }
-        
-        /// <summary>
-        /// Gets the list of <see cref="Feature"/>s that this <see cref="Feature"/> depends on.
-        /// </summary>
-        public IList<List<Type>> Dependencies { get; internal set; }
-        
-        /// <summary>
-        /// Gets the <see cref="Feature"/> version.
-        /// </summary>
-        public string Version { get; internal set; }
-        
-        /// <summary>
-        /// Gets the <see cref="Feature"/> startup tasks.
-        /// </summary>
-        public IList<Type> StartupTasks { get; internal set; }
-        
-        /// <summary>
-        /// Gets whether all dependant <see cref="Feature"/>s are activated.
-        /// </summary>
-        public bool DependenciesAreMeet { get; set; }
-    }
-
-    class DisplayDiagnosticsForFeatures : IWantToRunWhenConfigurationIsComplete
-    {
-        public FeaturesReport FeaturesReport { get; set; }
-        static ILog Logger = LogManager.GetLogger<DisplayDiagnosticsForFeatures>();
-        public void Run(Configure config)
-        {
-            var statusText = new StringBuilder();
-
-            statusText.AppendLine("------------- FEATURES ----------------");
-
-            foreach (var diagnosticData in FeaturesReport.Features)
-            {
-                statusText.AppendLine(string.Format("Name: {0}", diagnosticData.Name));
-                statusText.AppendLine(string.Format("Version: {0}", diagnosticData.Version));
-                statusText.AppendLine(string.Format("Enabled by Default: {0}", diagnosticData.EnabledByDefault ? "Yes" : "No"));
-                statusText.AppendLine(string.Format("Status: {0}", diagnosticData.Active ? "Enabled" : "Disabled"));
-                if (!diagnosticData.Active)
-                {
-                    statusText.Append("Deactivation reason: ");
-                    if (!diagnosticData.PrerequisitesFulfilled)
-                    {
-                        statusText.AppendLine(string.Format("Did not fulfill one of the Prerequisites"));
-                    } 
-                    else if (!diagnosticData.DependenciesAreMeet)
-                    {
-                        statusText.AppendLine(string.Format("Did not meet one of the dependencies: {0}", String.Join(",", diagnosticData.Dependencies.Select(t => "[" + String.Join(",", t.Select(t1 => t1.Name)) + "]"))));
-                    }
-                }
-                else
-                {
-                    statusText.AppendLine(string.Format("Dependencies: {0}", diagnosticData.Dependencies.Count == 0 ? "None" : String.Join(",", diagnosticData.Dependencies.Select(t => "[" + String.Join(",", t.Select(t1 => t1.Name)) + "]"))));
-                    statusText.AppendLine(string.Format("Startup Tasks: {0}", diagnosticData.StartupTasks.Count == 0 ? "None" : String.Join(",", diagnosticData.StartupTasks.Select(t => t.Name))));
-                }
-
-                statusText.AppendLine();
-            }
-
-            Logger.Info(statusText.ToString());
-        }
-    }
 
     class FeatureActivator
     {
         public FeatureActivator(SettingsHolder settings)
         {
             this.settings = settings;
+        }
+
+        internal List<FeatureDiagnosticData> Status
+        {
+            get { return features.Select(f => f.Diagnostics).ToList(); }
         }
 
         public void Add(Feature feature)
@@ -131,128 +27,228 @@ namespace NServiceBus.Features
                 settings.EnableFeatureByDefault(feature.GetType());
             }
 
-            foreach (var defaultSetting in feature.RegisteredDefaults)
-            {
-                defaultSetting(settings);
-            }
-
-            features.Add(Tuple.Create(feature, new FeatureDiagnosticData
+            features.Add(new FeatureInfo(feature, new FeatureDiagnosticData
             {
                 EnabledByDefault = feature.IsEnabledByDefault,
                 Name = feature.Name,
                 Version = feature.Version,
-                StartupTasks = feature.StartupTasks.AsReadOnly(),
-                Dependencies = feature.Dependencies.AsReadOnly(),
+                Dependencies = feature.Dependencies.AsReadOnly()
             }));
         }
 
-        public void SetupFeatures(FeatureConfigurationContext context)
+        public FeatureDiagnosticData[] SetupFeatures(IConfigureComponents container, PipelineSettings pipelineSettings, RoutingComponent routing, ReceiveConfiguration receiveConfiguration)
         {
-            var featuresToActivate = features.Where(f => IsEnabled(f.Item1.GetType()) && (f.Item2.PrerequisitesFulfilled = MeetsActivationCondition(f.Item1, context)))
-                .ToList();
+            // featuresToActivate is enumerated twice because after setting defaults some new features might got activated.
+            var sourceFeatures = Sort(features);
 
-            foreach (var feature in featuresToActivate)
+            var enabledFeatures = new List<FeatureInfo>();
+            while (true)
             {
-                ActivateFeature(feature, featuresToActivate, context);
+                var featureToActivate = sourceFeatures.FirstOrDefault(x => settings.IsFeatureEnabled(x.Feature.GetType()));
+                if (featureToActivate == null)
+                {
+                    break;
+                }
+                sourceFeatures.Remove(featureToActivate);
+                enabledFeatures.Add(featureToActivate);
+                featureToActivate.Feature.ConfigureDefaults(settings);
             }
 
-            context.Container.RegisterSingleton<FeaturesReport>(new FeaturesReport(features.Select(t=>t.Item2)));
+            foreach (var feature in enabledFeatures)
+            {
+                ActivateFeature(feature, enabledFeatures, container, pipelineSettings, routing, receiveConfiguration);
+            }
+
+            settings.PreventChanges();
+
+            return features.Select(t => t.Diagnostics).ToArray();
         }
 
-        public void RegisterStartupTasks(IConfigureComponents container)
+        public async Task StartFeatures(IBuilder builder, IMessageSession session)
         {
-            foreach (var feature in features.Where(f => f.Item1.IsActive))
+            foreach (var feature in features.Where(f => f.Feature.IsActive))
             {
-                foreach (var taskType in feature.Item1.StartupTasks)
+                foreach (var taskController in feature.TaskControllers)
                 {
-                    container.ConfigureComponent(taskType, DependencyLifecycle.SingleInstance);
+                    await taskController.Start(builder, session).ConfigureAwait(false);
                 }
             }
         }
 
-        public void StartFeatures(IBuilder builder)
+        public Task StopFeatures(IMessageSession session)
         {
-            foreach (var feature in features.Where(f => f.Item1.IsActive))
-            {
-                foreach (var taskType in feature.Item1.StartupTasks)
-                {
-                    var task = (FeatureStartupTask)builder.Build(taskType);
+            var featureStopTasks = features.Where(f => f.Feature.IsActive)
+                .SelectMany(f => f.TaskControllers)
+                .Select(task => task.Stop(session));
 
-                    task.PerformStartup();
-                }
-            }
+            return Task.WhenAll(featureStopTasks);
         }
 
-        static bool ActivateFeature(Tuple<Feature, FeatureDiagnosticData> feature, List<Tuple<Feature, FeatureDiagnosticData>> featuresToActivate, FeatureConfigurationContext context)
+        static List<FeatureInfo> Sort(IEnumerable<FeatureInfo> features)
         {
-            if (feature.Item1.IsActive)
+            // Step 1: create nodes for graph
+            var nameToNodeDict = new Dictionary<string, Node>();
+            var allNodes = new List<Node>();
+            foreach (var feature in features)
             {
-                return true;
+                // create entries to preserve order within
+                var node = new Node
+                {
+                    FeatureState = feature
+                };
+
+                nameToNodeDict[feature.Feature.Name] = node;
+                allNodes.Add(node);
             }
 
-            Func<List<Type>, bool> dependencyActivator = dependenciesTypes =>
-                                 {
-                                     var dependantFeaturesToActivate = new List<Tuple<Feature, FeatureDiagnosticData>>();
-
-                                     foreach (var dependency in dependenciesTypes.Select(dependencyType => featuresToActivate
-                                         .SingleOrDefault(f => f.Item1.GetType() == dependencyType))
-                                         .Where(dependency => dependency != null))
-                                     {
-                                         dependantFeaturesToActivate.Add(dependency);
-                                     }
-                                     var hasAllUpstreamDepsBeenActivated = dependantFeaturesToActivate.Aggregate(false, (current, f) => current | ActivateFeature(f, featuresToActivate, context));
-
-                                     return hasAllUpstreamDepsBeenActivated;
-                                 };
-
-            if (feature.Item1.Dependencies.All(dependencyActivator))
+            // Step 2: create edges dependencies
+            foreach (var node in allNodes)
             {
-                feature.Item1.SetupFeature(context);
-                feature.Item2.Active = true;
-                feature.Item2.DependenciesAreMeet = true;
-
-                return true;
+                foreach (var dependencyName in node.FeatureState.Feature.Dependencies.SelectMany(listOfDependencyNames => listOfDependencyNames))
+                {
+                    if (nameToNodeDict.TryGetValue(dependencyName, out var referencedNode))
+                    {
+                        node.previous.Add(referencedNode);
+                    }
+                }
             }
 
-            feature.Item2.DependenciesAreMeet = false;
+            // Step 3: Perform Topological Sort
+            var output = new List<FeatureInfo>();
+            foreach (var node in allNodes)
+            {
+                node.Visit(output);
+            }
+
+            // Step 4: DFS to check if we have an directed acyclic graph
+            foreach (var node in allNodes)
+            {
+                if (DirectedCycleExistsFrom(node, new Node[]
+                {
+                }))
+                {
+                    throw new ArgumentException("Cycle in dependency graph detected");
+                }
+            }
+
+            return output;
+        }
+
+        static bool DirectedCycleExistsFrom(Node node, Node[] visitedNodes)
+        {
+            if (node.previous.Any())
+            {
+                if (visitedNodes.Any(n => n == node))
+                {
+                    return true;
+                }
+
+                var newVisitedNodes = visitedNodes.Union(new[]
+                {
+                    node
+                }).ToArray();
+
+                foreach (var subNode in node.previous)
+                {
+                    if (DirectedCycleExistsFrom(subNode, newVisitedNodes))
+                    {
+                        return true;
+                    }
+                }
+            }
 
             return false;
         }
 
-        bool IsEnabled(Type featureType)
+        bool ActivateFeature(FeatureInfo featureInfo, List<FeatureInfo> featuresToActivate, IConfigureComponents container, PipelineSettings pipelineSettings, RoutingComponent routing, ReceiveConfiguration receiveConfiguration)
         {
-            return settings.GetOrDefault<bool>(featureType.FullName);
+            if (featureInfo.Feature.IsActive)
+            {
+                return true;
+            }
+
+            Func<List<string>, bool> dependencyActivator = dependencies =>
+            {
+                var dependentFeaturesToActivate = new List<FeatureInfo>();
+
+                foreach (var dependency in dependencies.Select(dependencyName => featuresToActivate
+                    .SingleOrDefault(f => f.Feature.Name == dependencyName))
+                    .Where(dependency => dependency != null))
+                {
+                    dependentFeaturesToActivate.Add(dependency);
+                }
+                return dependentFeaturesToActivate.Aggregate(false, (current, f) => current | ActivateFeature(f, featuresToActivate, container, pipelineSettings, routing, receiveConfiguration));
+            };
+            var featureType = featureInfo.Feature.GetType();
+            if (featureInfo.Feature.Dependencies.All(dependencyActivator))
+            {
+                featureInfo.Diagnostics.DependenciesAreMet = true;
+
+                var context = new FeatureConfigurationContext(settings, container, pipelineSettings, routing, receiveConfiguration);
+                if (!HasAllPrerequisitesSatisfied(featureInfo.Feature, featureInfo.Diagnostics, context))
+                {
+                    settings.MarkFeatureAsDeactivated(featureType);
+                    return false;
+                }
+                settings.MarkFeatureAsActive(featureType);
+                featureInfo.Feature.SetupFeature(context);
+                featureInfo.TaskControllers = context.TaskControllers;
+                featureInfo.Diagnostics.StartupTasks = context.TaskControllers.Select(d => d.Name).ToList();
+                featureInfo.Diagnostics.Active = true;
+                return true;
+            }
+            settings.MarkFeatureAsDeactivated(featureType);
+            featureInfo.Diagnostics.DependenciesAreMet = false;
+            return false;
         }
 
-        bool MeetsActivationCondition(Feature feature, FeatureConfigurationContext context)
+        static bool HasAllPrerequisitesSatisfied(Feature feature, FeatureDiagnosticData diagnosticData, FeatureConfigurationContext context)
         {
-            if (!feature.ShouldBeSetup(context))
-            {
-                return false;
-            }
+            diagnosticData.PrerequisiteStatus = feature.CheckPrerequisites(context);
 
-            return true;
+            return diagnosticData.PrerequisiteStatus.IsSatisfied;
         }
 
-        readonly SettingsHolder settings;
-        readonly List<Tuple<Feature, FeatureDiagnosticData>> features = new List<Tuple<Feature, FeatureDiagnosticData>>();
+        List<FeatureInfo> features = new List<FeatureInfo>();
+        SettingsHolder settings;
 
-        class Runner : IWantToRunWhenBusStartsAndStops
+        class FeatureInfo
         {
-
-            public IBuilder Builder { get; set; }
-
-            public FeatureActivator FeatureActivator { get; set; }
-
-            
-            public void Start()
+            public FeatureInfo(Feature feature, FeatureDiagnosticData diagnostics)
             {
-                FeatureActivator.StartFeatures(Builder);
+                Diagnostics = diagnostics;
+                Feature = feature;
             }
 
-            public void Stop()
+            public FeatureDiagnosticData Diagnostics { get; }
+            public Feature Feature { get; }
+            public IReadOnlyList<FeatureStartupTaskController> TaskControllers { get; set; }
+
+            public override string ToString()
             {
+                return $"{Feature.Name} [{Feature.Version}]";
             }
+        }
+
+        class Node
+        {
+            internal void Visit(ICollection<FeatureInfo> output)
+            {
+                if (visited)
+                {
+                    return;
+                }
+                visited = true;
+                foreach (var n in previous)
+                {
+                    n.Visit(output);
+                }
+                output.Add(FeatureState);
+            }
+
+            internal FeatureInfo FeatureState;
+            internal List<Node> previous = new List<Node>();
+            bool visited;
         }
     }
 }

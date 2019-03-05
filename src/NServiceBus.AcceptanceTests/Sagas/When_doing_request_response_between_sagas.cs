@@ -1,24 +1,23 @@
-﻿
 namespace NServiceBus.AcceptanceTests.Sagas
 {
     using System;
-    using EndpointTemplates;
+    using System.Threading.Tasks;
     using AcceptanceTesting;
+    using EndpointTemplates;
+    using Features;
     using NUnit.Framework;
-    using Saga;
-    using ScenarioDescriptors;
 
     public class When_doing_request_response_between_sagas : NServiceBusAcceptanceTest
     {
         [Test]
-        public void Should_autocorrelate_the_response_back_to_the_requesting_saga()
+        public async Task Should_autocorrelate_the_response_back_to_the_requesting_saga()
         {
-            Scenario.Define<Context>()
-                    .WithEndpoint<Endpoint>(b => b.Given(bus => bus.SendLocal(new InitiateRequestingSaga { DataId = Guid.NewGuid() })))
-                    .Done(c => c.DidRequestingSagaGetTheResponse)
-                    .Repeat(r => r.For(Transports.Default))
-                    .Should(c => Assert.True(c.DidRequestingSagaGetTheResponse))
-                    .Run();
+            var context = await Scenario.Define<Context>()
+                .WithEndpoint<Endpoint>(b => b.When(session => session.SendLocal(new InitiateRequestingSaga())))
+                .Done(c => c.DidRequestingSagaGetTheResponse)
+                .Run();
+
+            Assert.True(context.DidRequestingSagaGetTheResponse);
         }
 
         public class Context : ScenarioContext
@@ -28,79 +27,89 @@ namespace NServiceBus.AcceptanceTests.Sagas
 
         public class Endpoint : EndpointConfigurationBuilder
         {
-
             public Endpoint()
             {
-                EndpointSetup<DefaultServer>();
+                EndpointSetup<DefaultServer>(config => config.EnableFeature<TimeoutManager>());
             }
 
-            public class RequestingSaga : Saga<RequestingSaga.RequestingSagaData>, 
-                IAmStartedByMessages<InitiateRequestingSaga>, 
+            public class RequestResponseRequestingSaga1 : Saga<RequestResponseRequestingSaga1.RequestResponseRequestingSagaData1>,
+                IAmStartedByMessages<InitiateRequestingSaga>,
                 IHandleMessages<ResponseFromOtherSaga>
             {
-                public Context Context { get; set; }
+                public Context TestContext { get; set; }
 
-                public void Handle(InitiateRequestingSaga message)
+                public Task Handle(InitiateRequestingSaga message, IMessageHandlerContext context)
                 {
-                    Data.DataId = message.DataId;
-                    Bus.SendLocal(new RequestToRespondingSaga { DataId = message.DataId });
+                    return context.SendLocal(new RequestToRespondingSaga
+                    {
+                        SomeId = Guid.NewGuid() 
+                    });
                 }
 
-                public void Handle(ResponseFromOtherSaga message)
+                public Task Handle(ResponseFromOtherSaga message, IMessageHandlerContext context)
                 {
-                    Context.DidRequestingSagaGetTheResponse = true;
+                    TestContext.DidRequestingSagaGetTheResponse = true;
+
                     MarkAsComplete();
+
+                    return Task.FromResult(0);
                 }
 
-                protected override void ConfigureHowToFindSaga(SagaPropertyMapper<RequestingSagaData> mapper)
+                protected override void ConfigureHowToFindSaga(SagaPropertyMapper<RequestResponseRequestingSagaData1> mapper)
                 {
-                   mapper.ConfigureMapping<InitiateRequestingSaga>(m => m.DataId).ToSaga(s => s.DataId);
-                }
-                public class RequestingSagaData : ContainSagaData
-                {
-                    [Unique]
-                    public virtual Guid DataId { get; set; }
+                    mapper.ConfigureMapping<InitiateRequestingSaga>(m => m.Id).ToSaga(s => s.CorrIdForResponse);
+                    mapper.ConfigureMapping<ResponseFromOtherSaga>(m => m.SomeCorrelationId).ToSaga(s => s.CorrIdForResponse);
                 }
 
+                public class RequestResponseRequestingSagaData1 : ContainSagaData
+                {
+                    public virtual Guid CorrIdForResponse { get; set; } 
+                }
             }
 
-            public class RespondingSaga : Saga<RespondingSaga.RespondingSagaData>, 
+            public class RequestResponseRespondingSaga1 : Saga<RequestResponseRespondingSaga1.RequestResponseRespondingSagaData1>,
                 IAmStartedByMessages<RequestToRespondingSaga>
             {
-                public Context Context { get; set; }
+                public Context TestContext { get; set; }
 
-                public void Handle(RequestToRespondingSaga message)
+                public Task Handle(RequestToRespondingSaga message, IMessageHandlerContext context)
                 {
-                    Bus.Reply(new ResponseFromOtherSaga { DataId = message.DataId });
+                    // Both reply and reply to originator work here since the sender of the incoming message is the requesting saga
+                    // we explicitly set the correlation ID to a non-existent saga since auto correlation happens to work for this special case
+                    // where we reply from the first handler
+                    return context.Reply(new ResponseFromOtherSaga{SomeCorrelationId = Guid.NewGuid()});
                 }
 
-                protected override void ConfigureHowToFindSaga(SagaPropertyMapper<RespondingSagaData> mapper)
+                protected override void ConfigureHowToFindSaga(SagaPropertyMapper<RequestResponseRespondingSagaData1> mapper)
                 {
+                    mapper.ConfigureMapping<RequestToRespondingSaga>(m => m.SomeId).ToSaga(s => s.CorrIdForRequest);
                 }
 
-                public class RespondingSagaData : ContainSagaData
+                public class RequestResponseRespondingSagaData1 : ContainSagaData
                 {
+                    public virtual Guid CorrIdForRequest { get; set; }
                 }
-
             }
         }
 
-        [Serializable]
         public class InitiateRequestingSaga : ICommand
         {
-            public Guid DataId { get; set; }
+            public InitiateRequestingSaga()
+            {
+                Id = Guid.NewGuid();
+            }
+
+            public Guid Id { get; set; }
         }
 
-        [Serializable]
         public class RequestToRespondingSaga : ICommand
         {
-            public Guid DataId { get; set; }
+            public Guid SomeId { get; set; }
         }
 
-        [Serializable]
         public class ResponseFromOtherSaga : IMessage
         {
-            public Guid DataId { get; set; }
+            public Guid SomeCorrelationId { get; set; }
         }
     }
 }

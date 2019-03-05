@@ -1,31 +1,22 @@
 ﻿namespace NServiceBus.AcceptanceTesting
 {
     using System;
-    using System.Collections.Generic;
+    using Configuration.AdvancedExtensibility;
+    using Features;
     using Support;
 
     public class EndpointConfigurationBuilder : IEndpointConfigurationFactory
     {
-        public EndpointConfigurationBuilder()
-        {
-            configuration.EndpointMappings = new Dictionary<Type, Type>();
-        }
-
-        public EndpointConfigurationBuilder AuditTo<T>()
-        {
-            configuration.AuditEndpoint = typeof(T);
-            return this;
-        }
-
-        public EndpointConfigurationBuilder AuditTo(Address addressOfAuditQueue)
-        {
-            configuration.AddressOfAuditQueue = addressOfAuditQueue;
-            return this;
-        }
-
         public EndpointConfigurationBuilder CustomMachineName(string customMachineName)
         {
             configuration.CustomMachineName = customMachineName;
+
+            return this;
+        }
+
+        public EndpointConfigurationBuilder EnableStartupDiagnostics()
+        {
+            configuration.DisableStartupDiagnostics = false;
 
             return this;
         }
@@ -37,63 +28,96 @@
             return this;
         }
 
-        public EndpointConfigurationBuilder AllowExceptions()
-        {
-            configuration.AllowExceptions = true;
-
-            return this;
-        }
-
-        public EndpointConfigurationBuilder AddMapping<T>(Type endpoint)
-        {
-            configuration.EndpointMappings.Add(typeof(T),endpoint);
-
-            return this;
-        }
-
-        EndpointConfiguration CreateScenario()
+        EndpointCustomizationConfiguration CreateScenario()
         {
             configuration.BuilderType = GetType();
 
             return configuration;
         }
 
-        public EndpointConfigurationBuilder EndpointSetup<T>() where T : IEndpointSetupTemplate, new()
+        public EndpointConfigurationBuilder EndpointSetup<T>(Action<EndpointConfiguration> configurationBuilderCustomization = null,
+            Action<PublisherMetadata> publisherMetadata = null) where T : IEndpointSetupTemplate, new()
         {
-            return EndpointSetup<T>(c => { });
+            if (configurationBuilderCustomization == null)
+            {
+                configurationBuilderCustomization = b => { };
+            }
+
+            publisherMetadata?.Invoke(configuration.PublisherMetadata);
+
+            return EndpointSetup<T>((bc, esc) =>
+            {
+                configurationBuilderCustomization(bc);
+            });
         }
 
-        public EndpointConfigurationBuilder EndpointSetup<T>(Action<Configure> configCustomization) where T: IEndpointSetupTemplate, new()
+        public EndpointConfigurationBuilder EndpointSetup<T>(Action<EndpointConfiguration, RunDescriptor> configurationBuilderCustomization, Action<PublisherMetadata> publisherMetadata = null) where T : IEndpointSetupTemplate, new()
         {
-            configuration.GetConfiguration = (settings,routingTable) =>
+            if (configurationBuilderCustomization == null)
+            {
+                configurationBuilderCustomization = (rd, b) => { };
+            }
+
+            publisherMetadata?.Invoke(configuration.PublisherMetadata);
+
+            configuration.GetConfiguration = async runDescriptor =>
+            {
+                var endpointSetupTemplate = new T();
+                var endpointConfiguration = await endpointSetupTemplate.GetConfiguration(runDescriptor, configuration, bc =>
                 {
-                    var endpointSetupTemplate = new T();
-                    var config = endpointSetupTemplate.GetConfiguration(settings, configuration, new ScenarioConfigSource(configuration, routingTable));
-                    configCustomization(config);
-                    return config;
-                };
+                    configurationBuilderCustomization(bc, runDescriptor);
+                }).ConfigureAwait(false);
+
+                if (configuration.DisableStartupDiagnostics)
+                {
+                    endpointConfiguration.GetSettings().Set("NServiceBus.HostStartupDiagnostics", FeatureState.Disabled);
+                }
+
+                return endpointConfiguration;
+            };
 
             return this;
         }
 
-        EndpointConfiguration IEndpointConfigurationFactory.Get()
+        public EndpointConfigurationBuilder EndpointSetup<T,TContext>(Action<EndpointConfiguration, TContext> configurationBuilderCustomization, Action<PublisherMetadata> publisherMetadata = null)
+            where T : IEndpointSetupTemplate, new()
+            where TContext : ScenarioContext
+        {
+            if (configurationBuilderCustomization == null)
+            {
+                configurationBuilderCustomization = (rd, b) => { };
+            }
+
+            publisherMetadata?.Invoke(configuration.PublisherMetadata);
+
+            configuration.GetConfiguration = async runDescriptor =>
+            {
+                var endpointSetupTemplate = new T();
+                var endpointConfiguration = await endpointSetupTemplate.GetConfiguration(runDescriptor, configuration, bc =>
+                {
+                    configurationBuilderCustomization(bc, (TContext)runDescriptor.ScenarioContext);
+                }).ConfigureAwait(false);
+
+                if (configuration.DisableStartupDiagnostics)
+                {
+                    endpointConfiguration.GetSettings().Set("NServiceBus.HostStartupDiagnostics", FeatureState.Disabled);
+                }
+
+                return endpointConfiguration;
+            };
+
+            return this;
+        }
+
+
+        EndpointCustomizationConfiguration IEndpointConfigurationFactory.Get()
         {
             return CreateScenario();
         }
+        public ScenarioContext ScenarioContext { get; set; }
 
-       
-        readonly EndpointConfiguration configuration = new EndpointConfiguration();
 
-        public EndpointConfigurationBuilder WithConfig<T>(Action<T> action) where T : new()
-        {
-            var config = new T();
-
-            action(config);
-
-            configuration.UserDefinedConfigSections[typeof (T)] = config;
-            
-            return this;
-        }
+        EndpointCustomizationConfiguration configuration = new EndpointCustomizationConfiguration();
 
         public EndpointConfigurationBuilder ExcludeType<T>()
         {

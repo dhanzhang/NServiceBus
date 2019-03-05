@@ -1,6 +1,5 @@
-﻿namespace NServiceBus.InMemory.SagaPersister
+﻿namespace NServiceBus.Features
 {
-    using Features;
     /// <summary>
     /// Used to configure in memory saga persistence.
     /// </summary>
@@ -9,12 +8,13 @@
         internal InMemorySagaPersistence()
         {
             DependsOn<Sagas>();
+            Defaults(s => s.EnableFeature(typeof(InMemoryTransactionalStorageFeature)));
         }
 
         /// <summary>
-        /// See <see cref="Feature.Setup"/>
+        /// See <see cref="Feature.Setup" />.
         /// </summary>
-        protected override void Setup(FeatureConfigurationContext context)
+        protected internal override void Setup(FeatureConfigurationContext context)
         {
             context.Container.ConfigureComponent<InMemorySagaPersister>(DependencyLifecycle.SingleInstance);
         }

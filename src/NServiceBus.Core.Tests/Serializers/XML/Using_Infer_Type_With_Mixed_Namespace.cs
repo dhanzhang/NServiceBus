@@ -11,14 +11,14 @@
         public void Execute()
         {
             var xml = @"<?xml version=""1.0"" ?>
-<Messages 
-    xmlns:xsi=""http://www.w3.org/2001/XMLSchema-instance"" 
-    xmlns:xsd=""http://www.w3.org/2001/XMLSchema"" 
-    xmlns=""http://tempuri.net/NameSpace2"" 
-    xmlns:q1=""http://tempuri.net/NameSpace1"" 
-    xmlns:baseType=""NameSpace1.IMyBusMessage"">
-    <M1></M1>
-    <q1:M1></q1:M1>
+<Messages
+    xmlns:xsi=""http://www.w3.org/2001/XMLSchema-instance""
+    xmlns:xsd=""http://www.w3.org/2001/XMLSchema""
+    xmlns=""http://tempuri.net/Namespace2""
+    xmlns:q1=""http://tempuri.net/Namespace1""
+    xmlns:baseType=""Namespace1.IMyBusMessage"">
+    <FirstMessage></FirstMessage>
+    <q1:FirstMessage></q1:FirstMessage>
 </Messages>
 ";
             using (Stream stream = new MemoryStream())
@@ -28,18 +28,18 @@
                 writer.Flush();
                 stream.Position = 0;
 
-                var serializer = SerializerFactory.Create(typeof(IMyBusMessage), typeof(NameSpace1.M1), typeof(NameSpace2.M1));
+                var serializer = SerializerFactory.Create(typeof(IMyBusMessage), typeof(Namespace1.FirstMessage), typeof(Namespace2.FirstMessage));
 
                 var messageDeserialized = serializer.Deserialize(stream);
-                Assert.IsInstanceOf<NameSpace2.M1>(messageDeserialized[0]);
-                Assert.IsInstanceOf<NameSpace1.M1>(messageDeserialized[1]);
+                Assert.IsInstanceOf<Namespace2.FirstMessage>(messageDeserialized[0]);
+                Assert.IsInstanceOf<Namespace1.FirstMessage>(messageDeserialized[1]);
             }
         }
     }
 
 }
 
-namespace NameSpace1
+namespace Namespace1
 {
     using NServiceBus;
 
@@ -47,17 +47,17 @@ namespace NameSpace1
     {
     }
 
-    public class M1 : IMyBusMessage
+    public class FirstMessage : IMyBusMessage
     {
     }
 
 }
 
-namespace NameSpace2
+namespace Namespace2
 {
-    using NameSpace1;
+    using Namespace1;
 
-    public class M1 : IMyBusMessage
+    public class FirstMessage : IMyBusMessage
     {
     }
 }

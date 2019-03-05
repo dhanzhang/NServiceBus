@@ -1,73 +1,67 @@
 param($installPath, $toolsPath, $package, $project)
 
-if($toolsPath){
-	if (Get-Module NServiceBus.Powershell) {
-		Remove-Module NServiceBus.Powershell.Development
-	}
+$packageVersion = 'Unknown'
+$noticeEvent = 'noticeEvent'
+$jobName = 'analytics'
 
-	$pathToNServiceBusPSCmdLets = Join-Path $toolsPath NServiceBus.Powershell.Development.dll
-
-	if(Test-Path $pathToNServiceBusPSCmdLets){
-		Import-Module $pathToNServiceBusPSCmdLets
-
-		Write-Host ""
-		Write-Host "Type 'get-help about_NServiceBus' to see all available NServiceBus commands."
-		Write-Host ""
-	}
-	else {
-		Write-Host "NServiceBus powershell module could not be found, no powershell commands will be available"	
-	}
+# cleanup previous runs
+Get-Job | ? { $_.Name  -eq $jobName } | Remove-Job -Force -ErrorAction SilentlyContinue    
+ 
+if ($package) {
+    $packageVersion = $package.Version
 }
 
+# Define script to run in background job
+$jobScriptBlock = { 
+    param($packageVersion, $noticeEvent)
 
+    # Set Tracing on within the Job
+    Set-PSDebug -Trace 2
 
-$nserviceBusKeyPath =  "HKCU:SOFTWARE\NServiceBus" 
+    # Setup event forwarding to foreground
+    Register-EngineEvent -SourceIdentifier $noticeEvent -Forward 
+    
+    $nserviceBusKeyPath = 'HKCU:SOFTWARE\NServiceBus' 
+    $platformKeyPath = 'HKCU:SOFTWARE\ParticularSoftware'
+    
+    if ((Test-Path $nserviceBusKeyPath) -or (Test-Path $platformKeyPath)) {
+        New-Event -SourceIdentifier $noticeEvent -Sender "analytics" -MessageData "existing"
+    }
+    else {
+        New-Event -SourceIdentifier $noticeEvent -Sender "analytics" -MessageData "newuser"
 
-$platformKeyPath = "HKCU:SOFTWARE\ParticularSoftware"
-$isNewUser = $true
-
-$packageVersion = "Unknown"
-
-if($package){
-	$packageVersion = $package.Version
+        # Set Flag to bypass first time user feedback in Platform Installer
+        New-Item -Path $platformKeyPath -Force | Out-Null
+        Set-ItemProperty -Path $platformKeyPath -Name 'NuGetUser' -Value 'true' -Force
+    
+        # Post Version to particular.net
+        $wc = New-Object System.Net.WebClient 
+        try {
+            $url = 'https://api.particular.net/googleanalytics/reportfirsttimeinstall'
+            $postData  = New-Object System.Collections.Specialized.NameValueCollection
+            $postData.Add("version", $packageversion)
+            $wc.UseDefaultCredentials = $true
+            $wc.UploadValues($url, "post", $postdata)
+        } 
+        finally {
+            # Dispose
+            Remove-Variable -Name wc 
+        } 
+    }
 }
 
-#Figure out if this is a first time user
-try {
+$notice = @" 
+Reporting first time usage and version information to www.particular.net. 
+This call does not collect any personal information. For more details, 
+see the License Agreement and the Privacy Policy available here: https://particular.net/licenseagreement.
+"@
 
-	#Check for existing NServiceBus installations
-	if (Test-Path $nserviceBusKeyPath) {
-		"Existing NServiceBus v($packageVersion) user detected"
-	
-		$isNewUser = $false
-	}
-	
-	if (Test-Path $platformKeyPath){
-		"Existing Platform user detected"
-		$isNewUser = $false
-	}
+# Run JobScript
+$job = Start-Job -ScriptBlock $jobScriptBlock -Name $jobName -ArgumentList $packageVersion, $noticeEvent 
 
-	if (!($isNewuser)) {
-		exit
-	}
-
-	if (!(Test-Path $platformKeyPath)){
-		New-Item -Path HKCU:SOFTWARE -Name ParticularSoftware | Out-Null
-	}
-
-	Set-ItemProperty -Path $platformKeyPath -Name "NuGetUser" -Value "true" | Out-Null
-
-} 
-Catch [Exception] { 
-	Write-Warning $error[0]
-}
-
-$url = "http://particular.net/download-the-particular-service-platform?version=$packageVersion" 
-$url = $url.ToLowerInvariant(); 
-
-if($dte){
-	$dte.ExecuteCommand("View.URL", $url)
-}
-else{
-	"No dte detected, url: $url"
+# Wait for show notice event
+$event = Wait-Event -SourceIdentifier $noticeEvent -Timeout 5 
+Remove-Event -SourceIdentifier $noticeEvent -ErrorAction SilentlyContinue  
+if ($event.MessageData -eq "newuser") {
+    Write-Host $notice
 }

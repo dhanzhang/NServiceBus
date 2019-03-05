@@ -1,18 +1,17 @@
 ﻿namespace NServiceBus.Serialization
 {
     using System;
-    using Features;
+    using MessageInterfaces;
+    using Settings;
 
-    public abstract class SerializationDefinition<T> : ISerializationDefinition where T : Feature
+    /// <summary>
+    /// Implemented by serializers to provide their capabilities.
+    /// </summary>
+    public abstract class SerializationDefinition
     {
-        public Type ProvidedByFeature
-        {
-            get { return typeof(T); }
-        }
-    }
-
-    public interface ISerializationDefinition
-    {
-        Type ProvidedByFeature { get; }
+        /// <summary>
+        /// Provides a factory method for building a message serializer.
+        /// </summary>
+        public abstract Func<IMessageMapper, IMessageSerializer> Configure(ReadOnlySettings settings);
     }
 }

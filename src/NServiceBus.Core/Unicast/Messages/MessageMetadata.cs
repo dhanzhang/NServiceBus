@@ -1,20 +1,42 @@
 ﻿namespace NServiceBus.Unicast.Messages
 {
     using System;
-    using System.Collections.Generic;
-    using System.Linq;
 
+    /// <summary>
+    /// Message metadata class.
+    /// </summary>
     public class MessageMetadata
     {
-        public Type MessageType { get; set; }
-        public bool Recoverable { get; set; }
-        public TimeSpan TimeToBeReceived { get; set; }
-        public IEnumerable<Type> MessageHierarchy{ get; set; }
+        static Type[] emptyHierarchy = new Type[0];
 
-        public override string ToString()
+        /// <summary>
+        /// Create a new instance of <see cref="MessageMetadata"/>.
+        /// </summary>
+        /// <param name="messageType">The type of the message this metadata belongs to.</param>
+        public MessageMetadata(Type messageType) : this(messageType, null)
         {
-            return string.Format("MessageType: {0}, Recoverable: {1}, TimeToBeReceived: {2} , Parent types: {3}", MessageType, Recoverable,
-                                 TimeToBeReceived == TimeSpan.MaxValue ? "Not set" : TimeToBeReceived.ToString(),string.Join(";",MessageHierarchy.Select(pt=>pt.FullName)));
         }
+
+        /// <summary>
+        /// Create a new instance of <see cref="MessageMetadata"/>.
+        /// </summary>
+        /// <param name="messageType">The type of the message this metadata belongs to.</param>
+        /// <param name="messageHierarchy">the hierarchy of all message types implemented by the message this metadata belongs to.</param>
+        public MessageMetadata(Type messageType, Type[] messageHierarchy)
+        {
+            MessageType = messageType;
+            MessageHierarchy = messageHierarchy ?? emptyHierarchy;
+        }
+
+        /// <summary>
+        /// The <see cref="Type" /> of the message instance.
+        /// </summary>
+        public Type MessageType { get; }
+
+
+        /// <summary>
+        /// The message instance hierarchy.
+        /// </summary>
+        public Type[] MessageHierarchy { get; }
     }
 }

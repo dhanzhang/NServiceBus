@@ -3,58 +3,31 @@
     using System;
     using System.Collections.Generic;
     using System.Linq;
+    using System.Threading.Tasks;
 
-    [Serializable]
-    public class RunDescriptor : MarshalByRefObject
+    public class RunDescriptor
     {
-        protected bool Equals(RunDescriptor other)
+        public RunDescriptor(ScenarioContext context)
         {
-            return string.Equals(Key, other.Key);
+            Settings = new RunSettings();
+            ScenarioContext = context;
         }
 
-        public override bool Equals(object obj)
+        public RunSettings Settings { get; }
+
+        public ScenarioContext ScenarioContext { get; }
+
+        public void OnTestCompleted(Func<RunSummary, Task> testCompletedCallback)
         {
-            if (ReferenceEquals(null, obj)) return false;
-            if (ReferenceEquals(this, obj)) return true;
-            if (obj.GetType() != GetType()) return false;
-            return Equals((RunDescriptor) obj);
+            onCompletedCallbacks.Add(testCompletedCallback);
         }
 
-        public override int GetHashCode()
+        internal async Task RaiseOnTestCompleted(RunSummary result)
         {
-            return (Key != null ? Key.GetHashCode() : 0);
+            await Task.WhenAll(onCompletedCallbacks.Select(c => c(result)));
+            onCompletedCallbacks = null;
         }
 
-        public RunDescriptor()
-        {
-            Settings = new Dictionary<string, string>();
-        }
-
-        public RunDescriptor(RunDescriptor template)
-        {
-            Settings = template.Settings.ToDictionary(entry => entry.Key,
-                                                      entry => entry.Value);
-            Key = template.Key;
-        }
-
-        public string Key { get; set; }
-
-        public IDictionary<string, string> Settings { get; set; }
-
-        public ScenarioContext ScenarioContext { get; set; }
-
-        public TimeSpan TestExecutionTimeout { get; set; }
-
-        public int Permutation { get; set; }
-
-        public void Merge(RunDescriptor descriptorToAdd)
-        {
-            Key += "." + descriptorToAdd.Key;
-
-            foreach (var setting in descriptorToAdd.Settings)
-            {
-                Settings[setting.Key] = setting.Value;
-            }
-        }
+        internal List<Func<RunSummary, Task>> onCompletedCallbacks = new List<Func<RunSummary, Task>>();
     }
 }

@@ -2,24 +2,24 @@
 {
     /// <summary>
     /// Contains information about a file that was skipped during scanning along with a text describing
-    /// the reason why the file was skipped
+    /// the reason why the file was skipped.
     /// </summary>
     public class SkippedFile
     {
-        public SkippedFile(string filePath, string message)
+        internal SkippedFile(string filePath, string message)
         {
             FilePath = filePath;
             SkipReason = message;
         }
 
         /// <summary>
-        /// The full path to the file that was skipped
+        /// The full path to the file that was skipped.
         /// </summary>
-        public string FilePath { get; private set; }
-        
+        public string FilePath { get; }
+
         /// <summary>
-        /// Description of the reason why this file was skipped
+        /// Description of the reason why this file was skipped.
         /// </summary>
-        public string SkipReason { get; private set; }
+        public string SkipReason { get; }
     }
 }

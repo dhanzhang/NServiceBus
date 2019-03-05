@@ -1,65 +1,45 @@
-namespace NServiceBus.InMemory.SubscriptionStorage
+namespace NServiceBus
 {
+    using System;
     using System.Collections.Concurrent;
     using System.Collections.Generic;
-    using System.Linq;
+    using System.Threading.Tasks;
+    using Extensibility;
     using Unicast.Subscriptions;
     using Unicast.Subscriptions.MessageDrivenSubscriptions;
 
-    /// <summary>
-    /// In memory implementation of the subscription storage
-    /// </summary>
     class InMemorySubscriptionStorage : ISubscriptionStorage
     {
-        void ISubscriptionStorage.Subscribe(Address address, IEnumerable<MessageType> messageTypes)
+        public Task Subscribe(Subscriber subscriber, MessageType messageType, ContextBag context)
         {
-            messageTypes.ToList().ForEach(m =>
+            var dict = storage.GetOrAdd(messageType, type => new ConcurrentDictionary<string, Subscriber>(StringComparer.OrdinalIgnoreCase));
+
+            dict.AddOrUpdate(subscriber.TransportAddress, _ => subscriber, (_, __) => subscriber);
+            return TaskEx.CompletedTask;
+        }
+
+        public Task Unsubscribe(Subscriber subscriber, MessageType messageType, ContextBag context)
+        {
+            if (storage.TryGetValue(messageType, out var dict))
             {
-                List<Address> list;
-                if (!storage.TryGetValue(m, out list))
-                {
-                  storage[m] = list = new List<Address>();
-                }
-
-                if (!list.Contains(address))
-                {
-                    list.Add(address);
-                }
-            });
+                dict.TryRemove(subscriber.TransportAddress, out var _);
+            }
+            return TaskEx.CompletedTask;
         }
 
-        void ISubscriptionStorage.Unsubscribe(Address address, IEnumerable<MessageType> messageTypes)
+        public Task<IEnumerable<Subscriber>> GetSubscriberAddressesForMessage(IEnumerable<MessageType> messageTypes, ContextBag context)
         {
-            messageTypes.ToList().ForEach(m =>
+            var result = new HashSet<Subscriber>();
+            foreach (var m in messageTypes)
             {
-                List<Address> list;
-                if (storage.TryGetValue(m, out list))
+                if (storage.TryGetValue(m, out var list))
                 {
-                    list.Remove(address);
+                    result.UnionWith(list.Values);
                 }
-            });
+            }
+            return Task.FromResult((IEnumerable<Subscriber>) result);
         }
 
-
-        IEnumerable<Address> ISubscriptionStorage.GetSubscriberAddressesForMessage(IEnumerable<MessageType> messageTypes)
-        {
-            var result = new List<Address>();
-            messageTypes.ToList().ForEach(m =>
-            {
-                List<Address> list;
-                if (storage.TryGetValue(m, out list))
-                {
-                    result.AddRange(list);
-                }
-            });
-
-            return result.Distinct();
-        }
-
-        public void Init()
-        {
-        }
-
-        readonly ConcurrentDictionary<MessageType, List<Address>> storage = new ConcurrentDictionary<MessageType, List<Address>>();
+        ConcurrentDictionary<MessageType, ConcurrentDictionary<string, Subscriber>> storage = new ConcurrentDictionary<MessageType, ConcurrentDictionary<string, Subscriber>>();
     }
 }

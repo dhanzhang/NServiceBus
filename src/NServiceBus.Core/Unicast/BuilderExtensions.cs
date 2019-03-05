@@ -1,22 +1,24 @@
 namespace NServiceBus.Unicast
 {
     using System;
-    using System.Linq;
     using ObjectBuilder;
 
     /// <summary>
-    /// Extension methods for IBuilder
+    /// Extension methods for <see cref="IBuilder" />.
     /// </summary>
     public static class BuilderExtensions
     {
         /// <summary>
-        /// Applies the action on the instances of T
+        /// Applies the action on the instances of <typeparamref name="T" />.
         /// </summary>
         public static void ForEach<T>(this IBuilder builder, Action<T> action)
         {
-            var list = builder.BuildAll<T>().ToList();
-
-            list.ForEach(action);
+            Guard.AgainstNull(nameof(builder), builder);
+            Guard.AgainstNull(nameof(action), action);
+            foreach (var t in builder.BuildAll<T>())
+            {
+                action(t);
+            }
         }
     }
 }

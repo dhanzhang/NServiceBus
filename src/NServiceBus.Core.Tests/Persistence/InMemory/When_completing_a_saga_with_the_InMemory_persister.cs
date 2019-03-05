@@ -1,22 +1,35 @@
 ﻿namespace NServiceBus.SagaPersisters.InMemory.Tests
 {
     using System;
-    using NServiceBus.InMemory.SagaPersister;
+    using System.Threading.Tasks;
+    using Extensibility;
     using NUnit.Framework;
 
     [TestFixture]
-    public class When_completing_a_saga_with_the_InMemory_persister
+    class When_completing_a_saga_with_the_InMemory_persister
     {
         [Test]
-        public void Should_delete_the_saga()
+        public async Task Should_delete_the_saga()
         {
-            var inMemorySagaPersister = new InMemorySagaPersister();
-            var saga = new TestSaga { Id = Guid.NewGuid() };
-            
-            inMemorySagaPersister.Save(saga);
-            Assert.NotNull(inMemorySagaPersister.Get<TestSaga>(saga.Id));
-            inMemorySagaPersister.Complete(saga);
-            Assert.Null(inMemorySagaPersister.Get<TestSaga>(saga.Id));
+            var saga = new TestSagaData
+            {
+                Id = Guid.NewGuid()
+            };
+            var persister = new InMemorySagaPersister();
+            var insertSession = new InMemorySynchronizedStorageSession();
+            await persister.Save(saga, SagaMetadataHelper.GetMetadata<TestSaga>(saga), insertSession, new ContextBag());
+            await insertSession.CompleteAsync();
+
+            var intentionallySharedContext = new ContextBag();
+            var sagaData = await persister.Get<TestSagaData>(saga.Id, new InMemorySynchronizedStorageSession(), intentionallySharedContext );
+
+            var deleteSession = new InMemorySynchronizedStorageSession();
+            await persister.Complete(saga, deleteSession, intentionallySharedContext );
+            await deleteSession.CompleteAsync();
+            var completedSaga = await persister.Get<TestSagaData>(saga.Id, new InMemorySynchronizedStorageSession(), new ContextBag());
+
+            Assert.NotNull(sagaData);
+            Assert.Null(completedSaga);
         }
     }
 }

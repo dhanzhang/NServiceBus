@@ -1,14 +1,16 @@
 namespace NServiceBus
 {
+    using Settings;
+
     /// <summary>
     /// Indicates that this class contains logic that needs to run just before
-    /// configuration is finalized
+    /// configuration is finalized.
     /// </summary>
     public interface IWantToRunBeforeConfigurationIsFinalized
     {
         /// <summary>
-        /// Invoked before configuration is finalized and locked
+        /// Invoked before configuration is finalized and locked.
         /// </summary>
-        void Run(Configure config);
+        void Run(SettingsHolder settings);
     }
 }

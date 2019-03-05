@@ -1,17 +1,19 @@
-namespace NServiceBus.Scheduling
+namespace NServiceBus
 {
-    class ScheduledTaskMessageHandler : IHandleMessages<Messages.ScheduledTask>
-    {
-        IScheduler scheduler;
+    using System.Threading.Tasks;
 
-        public ScheduledTaskMessageHandler(IScheduler scheduler)
+    class ScheduledTaskMessageHandler : IHandleMessages<ScheduledTask>
+    {
+        public ScheduledTaskMessageHandler(DefaultScheduler scheduler)
         {
             this.scheduler = scheduler;
         }
 
-        public void Handle(Messages.ScheduledTask message)
+        public Task Handle(ScheduledTask message, IMessageHandlerContext context)
         {
-            scheduler.Start(message.TaskId);
+            return scheduler.Start(message.TaskId, context);
         }
+
+        DefaultScheduler scheduler;
     }
 }

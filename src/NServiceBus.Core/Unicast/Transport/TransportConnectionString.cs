@@ -1,56 +1,104 @@
-﻿namespace NServiceBus.Unicast.Transport
+﻿namespace NServiceBus
 {
     using System;
-    using System.Configuration;
+    using Transport;
 
-    class TransportConnectionString
+#if NETFRAMEWORK
+    sealed class TransportConnectionString
     {
-        protected TransportConnectionString()
+        TransportConnectionString()
         {
+            GetValue = () => ReadConnectionStringFromAppConfig(DefaultConnectionStringName);
         }
-
-        public string GetConnectionStringOrNull()
-        {
-            return GetValue();
-        }
-
-        Func<string> GetValue = () => ReadConnectionString(DefaultConnectionStringName);
-
-
-        static string ReadConnectionString(string connectionStringName)
-        {
-            var connectionStringSettings = ConfigurationManager.ConnectionStrings[connectionStringName];
-
-            if (connectionStringSettings == null)
-            {
-                return null;
-            }
-
-            return connectionStringSettings.ConnectionString;
-        }
-
 
         public TransportConnectionString(Func<string> func)
         {
             GetValue = func;
         }
 
-
         public TransportConnectionString(string name)
         {
-            GetValue = () => ReadConnectionString(name);
+            GetValue = () => ReadConnectionStringFromAppConfig(name);
         }
 
-        public static TransportConnectionString Default
+        static string ReadConnectionStringFromAppConfig(string connectionStringName)
         {
-            get
+            var connectionStringSettings = System.Configuration.ConfigurationManager.ConnectionStrings[connectionStringName];
+
+            if (connectionStringSettings?.ConnectionString != null)
             {
-                return new TransportConnectionString();
+                logger.WarnFormat("A connection string named '{0}' was found. Using named connection strings is discouraged. Instead, load the connection string in your code and pass the value to EndpointConfiguration.UseTransport().ConnectionString(connectionString).", connectionStringName);
             }
 
+            return connectionStringSettings?.ConnectionString;
         }
 
         const string DefaultConnectionStringName = "NServiceBus/Transport";
 
+        public static TransportConnectionString Default => new TransportConnectionString();
+
+        public string GetConnectionStringOrRaiseError(TransportDefinition transportDefinition)
+        {
+            var connectionString = GetValue();
+
+            if (connectionString == null && transportDefinition.RequiresConnectionString)
+            {
+                throw new InvalidOperationException(string.Format(message, transportDefinition.GetType().Name, transportDefinition.ExampleConnectionStringForErrorMessage));
+            }
+
+            return connectionString;
+        }
+
+        static Logging.ILog logger = Logging.LogManager.GetLogger<TransportExtensions>();
+
+        Func<string> GetValue;
+
+        const string message =
+@"Transport connection string has not been explicitly configured via 'ConnectionString' method, and no connection string was found in the app.config or web.config file.
+
+Here are examples of what is required:
+
+  endpointConfig.UseTransport<{0}>().ConnectionString(""{1}"");
+
+or
+
+  <connectionStrings>
+    <add name=""NServiceBus/Transport"" connectionString=""{1}"" />
+  </connectionStrings>
+";
     }
+#endif
+
+#if NETSTANDARD
+    sealed class TransportConnectionString
+    {
+        TransportConnectionString()
+        {
+            GetValue = () => null;
+        }
+
+        public TransportConnectionString(Func<string> func)
+        {
+            GetValue = func;
+        }
+
+        public static TransportConnectionString Default => new TransportConnectionString();
+
+        public string GetConnectionStringOrRaiseError(TransportDefinition transportDefinition)
+        {
+            var connectionString = GetValue();
+
+            if (connectionString == null && transportDefinition.RequiresConnectionString)
+            {
+                throw new InvalidOperationException(string.Format(message, transportDefinition.GetType().Name, transportDefinition.ExampleConnectionStringForErrorMessage));
+            }
+
+            return connectionString;
+        }
+
+        Func<string> GetValue;
+
+        const string message = "Transport connection string has not been explicitly configured via 'ConnectionString' method. Here is an example of what is required: endpointConfig.UseTransport<{0}>().ConnectionString(\"{1}\");";
+    }
+#endif
 }

@@ -1,40 +1,42 @@
-﻿namespace NServiceBus.DataBus
+﻿namespace NServiceBus
 {
     using System;
-    using System.Collections.Concurrent;
-    using System.Collections.Generic;
     using System.IO;
-    using System.Linq;
-    using System.Reflection;
+    using System.Threading.Tasks;
     using System.Transactions;
-    using Gateway.HeaderManagement;
+    using DataBus;
+    using DeliveryConstraints;
+    using Performance.TimeToBeReceived;
     using Pipeline;
-    using Pipeline.Contexts;
-    using Unicast.Transport;
 
-    class DataBusSendBehavior : IBehavior<OutgoingContext>
+    class DataBusSendBehavior : IBehavior<IOutgoingLogicalMessageContext, IOutgoingLogicalMessageContext>
     {
-        public IDataBus DataBus { get; set; }
-
-        public IDataBusSerializer DataBusSerializer { get; set; }
-
-        public void Invoke(OutgoingContext context, Action next)
+        public DataBusSendBehavior(IDataBus databus, IDataBusSerializer serializer, Conventions conventions)
         {
-            if (context.OutgoingLogicalMessage.IsControlMessage())
+            this.conventions = conventions;
+            dataBusSerializer = serializer;
+            dataBus = databus;
+        }
+
+        public async Task Invoke(IOutgoingLogicalMessageContext context, Func<IOutgoingLogicalMessageContext, Task> next)
+        {
+            var timeToBeReceived = TimeSpan.MaxValue;
+
+            if (context.Extensions.TryGetDeliveryConstraint(out DiscardIfNotReceivedBefore constraint))
             {
-                next();
-                return;
+                timeToBeReceived = constraint.MaxTime;
             }
 
-            var timeToBeReceived = context.OutgoingLogicalMessage.Metadata.TimeToBeReceived;
-            var message = context.OutgoingLogicalMessage.Instance;
+            var message = context.Message.Instance;
 
-            foreach (var property in GetDataBusProperties(message))
+            foreach (var property in conventions.GetDataBusProperties(message))
             {
-                var propertyValue = property.GetValue(message, null);
+                var propertyValue = property.Getter(message);
 
                 if (propertyValue == null)
+                {
                     continue;
+                }
 
                 using (var stream = new MemoryStream())
                 {
@@ -45,14 +47,14 @@
                         propertyValue = dataBusProperty.GetValue();
                     }
 
-                    DataBusSerializer.Serialize(propertyValue, stream);
+                    dataBusSerializer.Serialize(propertyValue, stream);
                     stream.Position = 0;
 
                     string headerValue;
 
-                    using (new TransactionScope(TransactionScopeOption.Suppress))
+                    using (new TransactionScope(TransactionScopeOption.Suppress, TransactionScopeAsyncFlowOption.Enabled))
                     {
-                        headerValue = DataBus.Put(stream, timeToBeReceived);
+                        headerValue = await dataBus.Put(stream, timeToBeReceived).ConfigureAwait(false);
                     }
 
                     string headerKey;
@@ -65,47 +67,28 @@
                     }
                     else
                     {
-                        property.SetValue(message, null, null);
-                        headerKey = String.Format("{0}.{1}", message.GetType().FullName, property.Name);
+                        property.Setter(message, null);
+                        headerKey = $"{message.GetType().FullName}.{property.Name}";
                     }
 
                     //we use the headers to in order to allow the infrastructure (eg. the gateway) to modify the actual key
-                    context.OutgoingLogicalMessage.Headers[HeaderMapper.DATABUS_PREFIX + headerKey] = headerValue;
+                    context.Headers["NServiceBus.DataBus." + headerKey] = headerValue;
                 }
             }
 
-            next();
+            await next(context).ConfigureAwait(false);
         }
 
-        static IEnumerable<PropertyInfo> GetDataBusProperties(object message)
+        readonly Conventions conventions;
+        readonly IDataBus dataBus;
+        readonly IDataBusSerializer dataBusSerializer;
+
+        public class Registration : RegisterStep
         {
-            var messageType = message.GetType();
-
-
-            List<PropertyInfo> value;
-
-            if (!cache.TryGetValue(messageType, out value))
+            public Registration(Conventions conventions) : base("DataBusSend", typeof(DataBusSendBehavior), "Saves the payload into the shared location", b => new DataBusSendBehavior(b.Build<IDataBus>(), b.Build<IDataBusSerializer>(), conventions))
             {
-                value = messageType.GetProperties()
-                    .Where(MessageConventionExtensions.IsDataBusProperty)
-                    .ToList();
-
-                cache[messageType] = value;
-            }
-
-
-            return value;
-        }
-
-        readonly static ConcurrentDictionary<Type, List<PropertyInfo>> cache = new ConcurrentDictionary<Type, List<PropertyInfo>>();
-
-
-        public class Registration : RegisterBehavior
-        {
-            public Registration(): base("DataBusSend", typeof(DataBusSendBehavior), "Saves the payload into the shared location")
-            {
-                InsertAfter(WellKnownBehavior.MutateOutgoingMessages);
-                InsertBefore(WellKnownBehavior.CreatePhysicalMessage);
+                InsertAfter("MutateOutgoingMessages");
+                InsertAfter("ApplyTimeToBeReceived");
             }
         }
     }

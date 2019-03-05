@@ -1,74 +1,38 @@
 ﻿namespace NServiceBus.AcceptanceTests.EndpointTemplates
 {
-    using System;
-    using System.Collections.Generic;
-    using ObjectBuilder.Common;
-    using ObjectBuilder.Common.Config;
-    using Persistence;
-    using ScenarioDescriptors;
+    using System.Threading.Tasks;
+    using AcceptanceTesting.Support;
+    using ObjectBuilder;
 
     public static class ConfigureExtensions
     {
-        public static string GetOrNull(this IDictionary<string, string> dictionary, string key)
+        public static async Task DefineTransport(this EndpointConfiguration config, RunDescriptor runDescriptor, EndpointCustomizationConfiguration endpointCustomizationConfiguration)
         {
-            if (!dictionary.ContainsKey(key))
-            {
-                return null;
-            }
-
-            return dictionary[key];
+            var transportConfiguration = TestSuiteConstraints.Current.CreateTransportConfiguration();
+            await transportConfiguration.Configure(endpointCustomizationConfiguration.EndpointName, config, runDescriptor.Settings, endpointCustomizationConfiguration.PublisherMetadata);
+            runDescriptor.OnTestCompleted(_ => transportConfiguration.Cleanup());
         }
 
-        public static Configure DefineTransport(this Configure config, IDictionary<string, string> settings)
+        public static async Task DefinePersistence(this EndpointConfiguration config, RunDescriptor runDescriptor, EndpointCustomizationConfiguration endpointCustomizationConfiguration)
         {
-            if (!settings.ContainsKey("Transport"))
-            {
-                settings = Transports.Default.Settings;
-            }
-
-            var transportType = Type.GetType(settings["Transport"]);
-
-            return config.UseTransport(transportType, c => c.ConnectionString(settings["Transport.ConnectionString"]));
+            var persistenceConfiguration = TestSuiteConstraints.Current.CreatePersistenceConfiguration();
+            await persistenceConfiguration.Configure(endpointCustomizationConfiguration.EndpointName, config, runDescriptor.Settings, endpointCustomizationConfiguration.PublisherMetadata);
+            runDescriptor.OnTestCompleted(_ => persistenceConfiguration.Cleanup());
         }
 
-        public static Configure DefinePersistence(this Configure config, IDictionary<string, string> settings)
+        public static void RegisterComponentsAndInheritanceHierarchy(this EndpointConfiguration builder, RunDescriptor runDescriptor)
         {
-            if (!settings.ContainsKey("Persistence"))
-            {
-                settings = Persistence.Default.Settings;
-            }
-
-            var persistenceType = Type.GetType(settings["Persistence"]);
-
-
-            var typeName = "Configure" + persistenceType.Name + "Persistence";
-
-            var configurerType = Type.GetType(typeName, false);
-
-            if (configurerType != null)
-            {
-                var configurer = Activator.CreateInstance(configurerType);
-
-                dynamic dc = configurer;
-
-                dc.Configure(config);
-            }
-
-            return config.UsePersistence(persistenceType);
+            builder.RegisterComponents(r => { RegisterInheritanceHierarchyOfContextOnContainer(runDescriptor, r); });
         }
 
-        public static Configure DefineBuilder(this Configure config, string builder)
+        static void RegisterInheritanceHierarchyOfContextOnContainer(RunDescriptor runDescriptor, IConfigureComponents r)
         {
-            if (string.IsNullOrEmpty(builder))
+            var type = runDescriptor.ScenarioContext.GetType();
+            while (type != typeof(object))
             {
-                return config.DefaultBuilder();
+                r.RegisterSingleton(type, runDescriptor.ScenarioContext);
+                type = type.BaseType;
             }
-
-            var container = (IContainer) Activator.CreateInstance(Type.GetType(builder));
-
-            ConfigureCommon.With(config, container);
-
-            return config;
         }
     }
 }

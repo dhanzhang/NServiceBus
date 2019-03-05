@@ -4,24 +4,24 @@ namespace NServiceBus.Core.Tests.Pipeline
     using System;
     using System.Collections.Generic;
     using System.Linq;
+    using System.Threading.Tasks;
     using NServiceBus.Pipeline;
-    using NServiceBus.Pipeline.Contexts;
     using NUnit.Framework;
 
     [TestFixture]
     class BehaviorRegistrationsCoordinatorTests
     {
-        BehaviorRegistrationsCoordinator coordinator;
-        List<RemoveBehavior> removals;
-        List<ReplaceBehavior> replacements;
+        StepRegistrationsCoordinator coordinator;
+        List<RemoveStep> removals;
+        List<ReplaceStep> replacements;
 
         [SetUp]
         public void Setup()
         {
-            removals = new List<RemoveBehavior>();
-            replacements = new List<ReplaceBehavior>();
+            removals = new List<RemoveStep>();
+            replacements = new List<ReplaceStep>();
 
-            coordinator = new BehaviorRegistrationsCoordinator(removals, replacements);
+            coordinator = new StepRegistrationsCoordinator(removals, replacements);
         }
 
         [Test]
@@ -31,11 +31,11 @@ namespace NServiceBus.Core.Tests.Pipeline
             coordinator.Register("2", typeof(FakeBehavior), "2");
             coordinator.Register("3", typeof(FakeBehavior), "3");
 
-            removals.Add(new RemoveBehavior("1"));
+            removals.Add(new RemoveStep("1"));
 
-            var model = coordinator.BuildRuntimeModel();
+            var model = coordinator.BuildPipelineModelFor<IRootContext>();
 
-            Assert.AreEqual(2, model.Count());
+            Assert.AreEqual(2, model.Count);
         }
 
         [Test]
@@ -45,11 +45,11 @@ namespace NServiceBus.Core.Tests.Pipeline
             coordinator.Register("2", typeof(FakeBehavior), "2");
             coordinator.Register("3", typeof(FakeBehavior), "3");
 
-            var model = coordinator.BuildRuntimeModel().ToList();
+            var model =  coordinator.BuildPipelineModelFor<IRootContext>().ToList();
 
-            Assert.AreEqual("1", model[0].Id);
-            Assert.AreEqual("2", model[1].Id);
-            Assert.AreEqual("3", model[2].Id);
+            Assert.AreEqual("1", model[0].StepId);
+            Assert.AreEqual("2", model[1].StepId);
+            Assert.AreEqual("3", model[2].StepId);
         }
 
         [Test]
@@ -59,10 +59,10 @@ namespace NServiceBus.Core.Tests.Pipeline
             coordinator.Register("2", typeof(FakeBehavior), "2");
             coordinator.Register("3", typeof(FakeBehavior), "3");
 
-            replacements.Add(new ReplaceBehavior("1", typeof(ReplacedBehavior), "new"));
-            replacements.Add(new ReplaceBehavior("2", typeof(ReplacedBehavior)));
+            replacements.Add(new ReplaceStep("1", typeof(ReplacedBehavior), "new"));
+            replacements.Add(new ReplaceStep("2", typeof(ReplacedBehavior)));
 
-            var model = coordinator.BuildRuntimeModel().ToList();
+            var model = coordinator.BuildPipelineModelFor<IRootContext>().ToList();
 
             Assert.AreEqual(typeof(ReplacedBehavior).FullName, model[0].BehaviorType.FullName);
             Assert.AreEqual("new", model[0].Description);
@@ -79,15 +79,15 @@ namespace NServiceBus.Core.Tests.Pipeline
             coordinator.Register(new MyCustomRegistration("1.5", "2", "1"));
             coordinator.Register(new MyCustomRegistration("2.5", "3", "2"));
             coordinator.Register(new MyCustomRegistration("3.5", null, "3"));
-            
-            var model = coordinator.BuildRuntimeModel().ToList();
 
-            Assert.AreEqual("1", model[0].Id);
-            Assert.AreEqual("1.5", model[1].Id);
-            Assert.AreEqual("2", model[2].Id);
-            Assert.AreEqual("2.5", model[3].Id);
-            Assert.AreEqual("3", model[4].Id);
-            Assert.AreEqual("3.5", model[5].Id);
+            var model = coordinator.BuildPipelineModelFor<IRootContext>().ToList();
+
+            Assert.AreEqual("1", model[0].StepId);
+            Assert.AreEqual("1.5", model[1].StepId);
+            Assert.AreEqual("2", model[2].StepId);
+            Assert.AreEqual("2.5", model[3].StepId);
+            Assert.AreEqual("3", model[4].StepId);
+            Assert.AreEqual("3.5", model[5].StepId);
         }
 
         [Test]
@@ -100,13 +100,13 @@ namespace NServiceBus.Core.Tests.Pipeline
             coordinator.Register(new MyCustomRegistration("1.5", "2,3", null));
             coordinator.Register(new MyCustomRegistration("2.5", "3", null));
 
-            var model = coordinator.BuildRuntimeModel().ToList();
+            var model = coordinator.BuildPipelineModelFor<IRootContext>().ToList();
 
-            Assert.AreEqual("1", model[0].Id);
-            Assert.AreEqual("1.5", model[1].Id);
-            Assert.AreEqual("2", model[2].Id);
-            Assert.AreEqual("2.5", model[3].Id);
-            Assert.AreEqual("3", model[4].Id);
+            Assert.AreEqual("1", model[0].StepId);
+            Assert.AreEqual("1.5", model[1].StepId);
+            Assert.AreEqual("2", model[2].StepId);
+            Assert.AreEqual("2.5", model[3].StepId);
+            Assert.AreEqual("3", model[4].StepId);
         }
 
         [Test]
@@ -120,14 +120,14 @@ namespace NServiceBus.Core.Tests.Pipeline
             coordinator.Register(new MyCustomRegistration("2.5", "3", "2,1"));
             coordinator.Register(new MyCustomRegistration("3.5", null, "1,2,3"));
 
-            var model = coordinator.BuildRuntimeModel().ToList();
+            var model = coordinator.BuildPipelineModelFor<IRootContext>().ToList();
 
-            Assert.AreEqual("1", model[0].Id);
-            Assert.AreEqual("1.5", model[1].Id);
-            Assert.AreEqual("2", model[2].Id);
-            Assert.AreEqual("2.5", model[3].Id);
-            Assert.AreEqual("3", model[4].Id);
-            Assert.AreEqual("3.5", model[5].Id);
+            Assert.AreEqual("1", model[0].StepId);
+            Assert.AreEqual("1.5", model[1].StepId);
+            Assert.AreEqual("2", model[2].StepId);
+            Assert.AreEqual("2.5", model[3].StepId);
+            Assert.AreEqual("3", model[4].StepId);
+            Assert.AreEqual("3.5", model[5].StepId);
         }
 
         [Test]
@@ -141,31 +141,52 @@ namespace NServiceBus.Core.Tests.Pipeline
             coordinator.Register(new MyCustomRegistration("1.6", "2", "1.5"));
             coordinator.Register(new MyCustomRegistration("1.1", "1.5", "1"));
 
-            var model = coordinator.BuildRuntimeModel().ToList();
+            var model = coordinator.BuildPipelineModelFor<IRootContext>().ToList();
 
-            Assert.AreEqual("1", model[0].Id);
-            Assert.AreEqual("1.1", model[1].Id);
-            Assert.AreEqual("1.5", model[2].Id);
-            Assert.AreEqual("1.6", model[3].Id);
-            Assert.AreEqual("2", model[4].Id);
-            Assert.AreEqual("3", model[5].Id);
+            Assert.AreEqual("1", model[0].StepId);
+            Assert.AreEqual("1.1", model[1].StepId);
+            Assert.AreEqual("1.5", model[2].StepId);
+            Assert.AreEqual("1.6", model[3].StepId);
+            Assert.AreEqual("2", model[4].StepId);
+            Assert.AreEqual("3", model[5].StepId);
         }
 
-        class MyCustomRegistration : RegisterBehavior
+        [Test]
+        public void Should_throw_if_behavior_wants_to_go_before_connector()
         {
-            public MyCustomRegistration(string id, string before, string after)
-                : base(id, typeof(FakeBehavior), id)
+            coordinator.Register("connector", typeof(FakeStageConnector), "Connector");
+
+            coordinator.Register(new MyCustomRegistration("x","connector",""));
+
+
+            Assert.Throws<Exception>(() => coordinator.BuildPipelineModelFor<IRootContext>());
+        }
+
+        [Test]
+        public void Should_throw_if_behavior_wants_to_go_after_connector()
+        {
+            coordinator.Register("connector", typeof(FakeStageConnector), "Connector");
+
+            coordinator.Register(new MyCustomRegistration("x", "", "connector"));
+
+
+            Assert.Throws<Exception>(() => coordinator.BuildPipelineModelFor<IRootContext>());
+        }
+
+        class MyCustomRegistration : RegisterStep
+        {
+            public MyCustomRegistration(string pipelineStep, string before, string after)
+                : base(pipelineStep, typeof(FakeBehavior), pipelineStep)
             {
-                if (!String.IsNullOrEmpty(before))
+                if (!string.IsNullOrEmpty(before))
                 {
                     foreach (var b in before.Split(','))
                     {
                         InsertBefore(b);
-                        
                     }
                 }
 
-                if (!String.IsNullOrEmpty(after))
+                if (!string.IsNullOrEmpty(after))
                 {
                     foreach (var a in after.Split(','))
                     {
@@ -175,19 +196,40 @@ namespace NServiceBus.Core.Tests.Pipeline
                 }
             }
         }
-        class FakeBehavior:IBehavior<IncomingContext>
+
+        class FakeBehavior: IBehavior<IRootContext, IRootContext>
         {
-            public void Invoke(IncomingContext context, Action next)
+            public Task Invoke(IRootContext context, Func<IRootContext, Task> next)
             {
                 throw new NotImplementedException();
             }
         }
 
-        class ReplacedBehavior : IBehavior<IncomingContext>
+
+        class ReplacedBehavior : IBehavior<IRootContext, IRootContext>
         {
-            public void Invoke(IncomingContext context, Action next)
+            public Task Invoke(IRootContext context, Func<IRootContext, Task> next)
             {
                 throw new NotImplementedException();
+            }
+        }
+
+        class FakeStageConnector : StageConnector<IRootContext, IChildContext>
+        {
+            public override Task Invoke(IRootContext context, Func<IChildContext, Task> stage)
+            {
+                throw new NotImplementedException();
+            }
+        }
+
+        interface IRootContext : IBehaviorContext { }
+
+        interface IChildContext : IIncomingContext { }
+
+        class ChildContext : IncomingContext, IChildContext
+        {
+            public ChildContext() : base("messageId", "replyToAddress", new Dictionary<string, string>(), null)
+            {
             }
         }
     }

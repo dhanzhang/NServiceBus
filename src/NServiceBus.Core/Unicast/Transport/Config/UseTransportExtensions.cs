@@ -1,10 +1,7 @@
 namespace NServiceBus
 {
     using System;
-    using System.Linq;
-    using Transports;
-    using Unicast.Transport;
-    using Utils.Reflection;
+    using Transport;
 
     /// <summary>
     /// Extension methods to configure transport.
@@ -14,37 +11,34 @@ namespace NServiceBus
         /// <summary>
         /// Configures NServiceBus to use the given transport.
         /// </summary>
-        public static Configure UseTransport<T>(this Configure config, Action<TransportConfiguration> customizations = null) where T : TransportDefinition
+        public static TransportExtensions<T> UseTransport<T>(this EndpointConfiguration endpointConfiguration) where T : TransportDefinition, new()
         {
-            return UseTransport(config, typeof(T), customizations);
-        }
+            Guard.AgainstNull(nameof(endpointConfiguration), endpointConfiguration);
+            var type = typeof(TransportExtensions<>).MakeGenericType(typeof(T));
+            var extension = (TransportExtensions<T>) Activator.CreateInstance(type, endpointConfiguration.Settings);
 
+            var transportDefinition = new T();
+            ConfigureTransport(endpointConfiguration, transportDefinition);
+            return extension;
+        }
 
         /// <summary>
         /// Configures NServiceBus to use the given transport.
         /// </summary>
-        public static Configure UseTransport(this Configure config, Type transportDefinitionType, Action<TransportConfiguration> customizations = null)
+        public static TransportExtensions UseTransport(this EndpointConfiguration endpointConfiguration, Type transportDefinitionType)
         {
-            config.Settings.SetDefault<TransportConnectionString>(TransportConnectionString.Default);
+            Guard.AgainstNull(nameof(endpointConfiguration), endpointConfiguration);
+            Guard.AgainstNull(nameof(transportDefinitionType), transportDefinitionType);
+            Guard.TypeHasDefaultConstructor(transportDefinitionType, nameof(transportDefinitionType));
 
-            var transportConfigurerType =
-               config.TypesToScan.SingleOrDefault(
-                   t => typeof(IConfigureTransport<>).MakeGenericType(transportDefinitionType).IsAssignableFrom(t));
+            var transportDefinition = transportDefinitionType.Construct<TransportDefinition>();
+            ConfigureTransport(endpointConfiguration, transportDefinition);
+            return new TransportExtensions(endpointConfiguration.Settings);
+        }
 
-            if (transportConfigurerType == null)
-                throw new InvalidOperationException(
-                    "We couldn't find a IConfigureTransport implementation for your selected transport: " +
-                    transportDefinitionType.Name);
-
-            if (customizations != null)
-            {
-                customizations(new TransportConfiguration(config));
-            }
-
-            config.Settings.Set<TransportDefinition>(transportDefinitionType.Construct<TransportDefinition>());
-            config.Settings.Set("TransportConfigurer", transportConfigurerType);
-
-            return config;
+        static void ConfigureTransport(EndpointConfiguration endpointConfiguration, TransportDefinition transportDefinition)
+        {
+            endpointConfiguration.Settings.Set(transportDefinition);
         }
     }
 }

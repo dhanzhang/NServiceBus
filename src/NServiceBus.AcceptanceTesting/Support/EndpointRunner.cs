@@ -2,37 +2,40 @@
 {
     using System;
     using System.Collections.Generic;
-    using System.Runtime.Remoting.Lifetime;
+    using System.Linq;
     using System.Threading;
     using System.Threading.Tasks;
+    using Configuration.AdvancedExtensibility;
     using Logging;
     using NServiceBus.Support;
-    using Transports;
+    using Transport;
 
-    [Serializable]
-    public class EndpointRunner : MarshalByRefObject
+    public class EndpointRunner : ComponentRunner
     {
         static ILog Logger = LogManager.GetLogger<EndpointRunner>();
-        readonly SemaphoreSlim contextChanged = new SemaphoreSlim(0);
-        readonly IList<Guid> executedWhens = new List<Guid>();
+        bool doNotFailOnErrorMessages;
         EndpointBehavior behavior;
-        IStartableBus bus;
-        Configure config;
-        EndpointConfiguration configuration;
-        Task executeWhens;
+        IStartableEndpoint startable;
+        IEndpointInstance endpointInstance;
+        EndpointCustomizationConfiguration configuration;
         ScenarioContext scenarioContext;
-        bool stopped;
+        EndpointConfiguration endpointConfiguration;
 
-        public Result Initialize(RunDescriptor run, EndpointBehavior endpointBehavior,
-            IDictionary<Type, string> routingTable, string endpointName)
+        public EndpointRunner(bool doNotFailOnErrorMessages)
         {
+            this.doNotFailOnErrorMessages = doNotFailOnErrorMessages;
+        }
+
+        public async Task Initialize(RunDescriptor run, EndpointBehavior endpointBehavior, string endpointName)
+        {
+            ScenarioContext.CurrentEndpoint = endpointName;
             try
             {
                 behavior = endpointBehavior;
                 scenarioContext = run.ScenarioContext;
-                configuration =
-                    ((IEndpointConfigurationFactory)Activator.CreateInstance(endpointBehavior.EndpointBuilderType))
-                        .Get();
+                var endpointConfigurationFactory = (IEndpointConfigurationFactory)Activator.CreateInstance(endpointBehavior.EndpointBuilderType);
+                endpointConfigurationFactory.ScenarioContext = run.ScenarioContext;
+                configuration = endpointConfigurationFactory.Get();
                 configuration.EndpointName = endpointName;
 
                 if (!string.IsNullOrEmpty(configuration.CustomMachineName))
@@ -41,158 +44,141 @@
                 }
 
                 //apply custom config settings
-                config = configuration.GetConfiguration(run, routingTable);
-
-                config.Configurer.RegisterSingleton(scenarioContext.GetType(), scenarioContext);
-                scenarioContext.ContextPropertyChanged += scenarioContext_ContextPropertyChanged;
-
-                endpointBehavior.CustomConfig.ForEach(customAction => customAction(config));
-
-                config.EnableInstallers();
-                bus = config.CreateBus();
-
-                var transportDefinition = config.Settings.Get<TransportDefinition>();
-
-                scenarioContext.HasNativePubSubSupport = transportDefinition.HasNativePubSubSupport;
-
-                executeWhens = Task.Factory.StartNew(() =>
+                if (configuration.GetConfiguration == null)
                 {
-                    while (!stopped)
-                    {
-                        if (!contextChanged.Wait(TimeSpan.FromSeconds(5)))
-                        //we spin around each 5s since the callback mechanism seems to be shaky
-                        {
-                            continue;
-                        }
+                    throw new Exception($"Missing EndpointSetup<T> in the constructor of {endpointName} endpoint.");
+                }
+                endpointConfiguration = await configuration.GetConfiguration(run).ConfigureAwait(false);
+                RegisterInheritanceHierarchyOfContextInSettings(scenarioContext);
 
-                        lock (behavior)
-                        {
-                            foreach (var when in behavior.Whens)
-                            {
-                                if (executedWhens.Contains(when.Id))
-                                {
-                                    continue;
-                                }
+                endpointBehavior.CustomConfig.ForEach(customAction => customAction(endpointConfiguration, scenarioContext));
 
-                                if (when.ExecuteAction(scenarioContext, bus))
-                                {
-                                    executedWhens.Add(when.Id);
-                                }
-                            }
-                        }
-                    }
-                });
+                startable = await Endpoint.Create(endpointConfiguration).ConfigureAwait(false);
 
-                return Result.Success();
+                var transportInfrastructure = endpointConfiguration.GetSettings().Get<TransportInfrastructure>();
+                scenarioContext.HasNativePubSubSupport = transportInfrastructure.OutboundRoutingPolicy.Publishes == OutboundRoutingType.Multicast;
             }
             catch (Exception ex)
             {
                 Logger.Error("Failed to initialize endpoint " + endpointName, ex);
-                return Result.Failure(ex);
+                throw;
             }
         }
 
-        private void scenarioContext_ContextPropertyChanged(object sender, EventArgs e)
+        void RegisterInheritanceHierarchyOfContextInSettings(ScenarioContext context)
         {
-            contextChanged.Release();
+            var type = context.GetType();
+            while (type != typeof(object))
+            {
+                endpointConfiguration.GetSettings().Set(type.FullName, scenarioContext);
+                type = type.BaseType;
+            }
         }
 
-        public Result Start()
+        public override async Task Start(CancellationToken token)
         {
+            ScenarioContext.CurrentEndpoint = configuration.EndpointName;
             try
             {
-                foreach (var given in behavior.Givens)
+                endpointInstance = await startable.Start().ConfigureAwait(false);
+
+                if (token.IsCancellationRequested)
                 {
-                    var action = given.GetAction(scenarioContext);
-
-                    action(bus);
+                    throw new OperationCanceledException("Endpoint start was aborted");
                 }
-
-                bus.Start();
-
-
-                return Result.Success();
             }
             catch (Exception ex)
             {
                 Logger.Error("Failed to start endpoint " + configuration.EndpointName, ex);
 
-                return Result.Failure(ex);
+                throw;
             }
         }
 
-        public Result Stop()
+        public override async Task ComponentsStarted(CancellationToken token)
         {
+            ScenarioContext.CurrentEndpoint = configuration.EndpointName;
             try
             {
-                stopped = true;
+                if (behavior.Whens.Count != 0)
+                {
+                    await Task.Run(async () =>
+                    {
+                        var executedWhens = new HashSet<Guid>();
 
-                scenarioContext.ContextPropertyChanged -= scenarioContext_ContextPropertyChanged;
+                        while (!token.IsCancellationRequested)
+                        {
+                            if (executedWhens.Count == behavior.Whens.Count)
+                            {
+                                break;
+                            }
 
-                executeWhens.Wait();
-                contextChanged.Dispose();
+                            if (token.IsCancellationRequested)
+                            {
+                                break;
+                            }
 
-                bus.Dispose();
+                            foreach (var when in behavior.Whens)
+                            {
+                                if (token.IsCancellationRequested)
+                                {
+                                    break;
+                                }
 
-                return Result.Success();
+                                if (executedWhens.Contains(when.Id))
+                                {
+                                    continue;
+                                }
+
+                                if (await when.ExecuteAction(scenarioContext, endpointInstance).ConfigureAwait(false))
+                                {
+                                    executedWhens.Add(when.Id);
+                                }
+                            }
+
+                            await Task.Yield(); // enforce yield current context, tight loop could introduce starvation
+                        }
+                    }, token).ConfigureAwait(false);
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"Failed to execute Whens on endpoint{configuration.EndpointName}", ex);
+
+                throw;
+            }
+        }
+
+        public override async Task Stop()
+        {
+            ScenarioContext.CurrentEndpoint = configuration.EndpointName;
+            try
+            {
+                if (endpointInstance != null)
+                {
+                    await endpointInstance.Stop().ConfigureAwait(false);
+                }
             }
             catch (Exception ex)
             {
                 Logger.Error("Failed to stop endpoint " + configuration.EndpointName, ex);
+                throw;
+            }
 
-                return Result.Failure(ex);
+            if (!doNotFailOnErrorMessages)
+            {
+                ThrowOnFailedMessages();
             }
         }
 
-        public override object InitializeLifetimeService()
+        void ThrowOnFailedMessages()
         {
-            var lease = (ILease)base.InitializeLifetimeService();
-            if (lease.CurrentState == LeaseState.Initial)
+            foreach (var failedMessage in scenarioContext.FailedMessages.Where(kvp => kvp.Key == Name))
             {
-                lease.InitialLeaseTime = TimeSpan.FromMinutes(2);
-                lease.SponsorshipTimeout = TimeSpan.FromMinutes(2);
-                lease.RenewOnCallTime = TimeSpan.FromSeconds(2);
-            }
-            return lease;
-        }
-
-        public string Name()
-        {
-            return AppDomain.CurrentDomain.FriendlyName;
-        }
-
-        [Serializable]
-        public class Result : MarshalByRefObject
-        {
-            public Exception Exception { get; set; }
-
-            public bool Failed
-            {
-                get { return Exception != null; }
-            }
-
-            public static Result Success()
-            {
-                return new Result();
-            }
-
-            public static Result Failure(Exception ex)
-            {
-                var baseException = ex.GetBaseException();
-
-                if (ex.GetType().IsSerializable)
-                {
-                    return new Result
-                    {
-                        Exception = baseException
-                    };
-                }
-
-                return new Result
-                {
-                    Exception = new Exception(baseException.Message)
-                };
+                throw new MessageFailedException(failedMessage.Value.First(), scenarioContext);
             }
         }
+
+        public override string Name => configuration.EndpointName;
     }
 }

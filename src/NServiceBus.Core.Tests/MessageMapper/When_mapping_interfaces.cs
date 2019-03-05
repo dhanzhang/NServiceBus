@@ -38,12 +38,13 @@ namespace MessageMapperTests
         }
 
         [Test]
-        public void Interfaces_with_methods_should_be_ignored()
+        public void Interfaces_with_methods_are_not_supported()
         {
             var mapper = new MessageMapper();
-            mapper.Initialize(new[] { typeof(InterfaceWithMethods) });
-
-            Assert.Null(mapper.GetMappedTypeFor(typeof(InterfaceWithMethods)));
+            Assert.Throws<Exception>(() => mapper.Initialize(new[]
+            {
+                typeof(InterfaceWithMethods)
+            }));
         }
 
         public interface InterfaceWithMethods
@@ -181,7 +182,7 @@ namespace MessageMapperTests
             public int MyAge { get; set; }
         }
         
-        private bool PropertyContainsAttribute(string propertyName, Type attributeType, object obj)
+        bool PropertyContainsAttribute(string propertyName, Type attributeType, object obj)
         {
             return obj.GetType().GetProperty(propertyName).GetCustomAttributes(attributeType,true).Length > 0;
         }

@@ -1,35 +1,50 @@
 namespace NServiceBus.Unicast.Queuing
 {
     using System;
+    using System.Runtime.Serialization;
 
+    /// <summary>
+    /// Thrown when the queue could not be found.
+    /// </summary>
     [Serializable]
     public class QueueNotFoundException : Exception
     {
-        public Address Queue { get; set; }
-
+        /// <summary>
+        /// Initializes a new instance of <see cref="QueueNotFoundException" />.
+        /// </summary>
         public QueueNotFoundException()
         {
         }
-        public QueueNotFoundException(Address queue, string message, Exception inner) : base( message, inner )
+
+        /// <summary>
+        /// Initializes a new instance of <see cref="QueueNotFoundException" />.
+        /// </summary>
+        public QueueNotFoundException(string queue, string message, Exception inner) : base(message, inner)
         {
             Queue = queue;
         }
 
-        protected QueueNotFoundException(
-            System.Runtime.Serialization.SerializationInfo info, 
-            System.Runtime.Serialization.StreamingContext context) : base(info, context)
+        /// <summary>
+        /// Initializes a new instance of <see cref="QueueNotFoundException" />.
+        /// </summary>
+        protected QueueNotFoundException(SerializationInfo info, StreamingContext context) : base(info, context)
         {
-            if (info != null)
-                Queue = Address.Parse(info.GetString("Queue"));
+            Queue = info.GetString("Queue");
         }
 
-        public override void GetObjectData(
-            System.Runtime.Serialization.SerializationInfo info, 
-            System.Runtime.Serialization.StreamingContext context)
+        /// <summary>
+        /// The queue address.
+        /// </summary>
+        public string Queue { get; set; }
+
+        /// <summary>
+        /// Gets the object data for serialization purposes.
+        /// </summary>
+        public override void GetObjectData(SerializationInfo info, StreamingContext context)
         {
             base.GetObjectData(info, context);
 
-            info.AddValue("Queue", Queue.ToString());
+            info.AddValue("Queue", Queue);
         }
     }
 }

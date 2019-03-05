@@ -1,50 +1,25 @@
-namespace NServiceBus.Utils.Reflection
+namespace NServiceBus
 {
     using System;
     using System.Collections;
     using System.Collections.Concurrent;
     using System.Collections.Generic;
+    using System.Linq;
     using System.Reflection;
 
-    static class ExtensionMethods
+    static class TypeExtensionMethods
     {
         public static T Construct<T>(this Type type)
         {
-            var defaultConstructor = type.GetConstructor(BindingFlags.Instance | BindingFlags.NonPublic, null, new Type[] { }, null);
+            var defaultConstructor = type.GetConstructor(BindingFlags.Instance | BindingFlags.NonPublic, null, new Type[]
+            {
+            }, null);
             if (defaultConstructor != null)
             {
-                return (T)defaultConstructor.Invoke(null); 
+                return (T) defaultConstructor.Invoke(null);
             }
 
-            return (T)Activator.CreateInstance(type);
-        }
-
-        public static Type GetGenericallyContainedType(this Type type, Type openGenericType, Type genericArg)
-        {
-            Type result = null;
-            LoopAndAct(type, openGenericType, genericArg, t => result = t);
-
-            return result;
-        }
-
-        static void LoopAndAct(Type type, Type openGenericType, Type genericArg, Action<Type> act)
-        {
-            foreach (var i in type.GetInterfaces())
-            {
-                var args = i.GetGenericArguments();
-
-                if (args.Length != 1)
-                {
-                    continue;
-                }
-
-                if (genericArg.IsAssignableFrom(args[0])
-                    && openGenericType.MakeGenericType(args[0]) == i)
-                {
-                    act(args[0]);
-                    break;
-                }
-            }
+            return (T) Activator.CreateInstance(type);
         }
 
         /// <summary>
@@ -52,14 +27,24 @@ namespace NServiceBus.Utils.Reflection
         /// </summary>
         public static bool IsSimpleType(this Type type)
         {
-            return (type == typeof(string) ||
-                    type.IsPrimitive ||
-                    type == typeof(decimal) ||
-                    type == typeof(Guid) ||
-                    type == typeof(DateTime) ||
-                    type == typeof(TimeSpan) ||
-                    type == typeof(DateTimeOffset) ||
-                    type.IsEnum);
+            return type == typeof(string) ||
+                   type.IsPrimitive ||
+                   type == typeof(decimal) ||
+                   type == typeof(Guid) ||
+                   type == typeof(DateTime) ||
+                   type == typeof(TimeSpan) ||
+                   type == typeof(DateTimeOffset) ||
+                   type.IsEnum;
+        }
+
+        public static bool IsNullableType(this Type type)
+        {
+            var args = type.GetGenericArguments();
+            if (args.Length == 1 && args[0].IsValueType)
+            {
+                return type.GetGenericTypeDefinition() == typeof(Nullable<>);
+            }
+            return false;
         }
 
         /// <summary>
@@ -68,44 +53,35 @@ namespace NServiceBus.Utils.Reflection
         /// </summary>
         public static string SerializationFriendlyName(this Type t)
         {
-            lock(TypeToNameLookup)
+            return TypeToNameLookup.GetOrAdd(t.TypeHandle, typeHandle =>
             {
-                string typeName;
-                if (TypeToNameLookup.TryGetValue(t, out typeName))
+                var index = t.Name.IndexOf('`');
+                if (index >= 0)
                 {
-                    return typeName;
+                    var result = t.Name.Substring(0, index) + "Of";
+                    var args = t.GetGenericArguments();
+                    for (var i = 0; i < args.Length; i++)
+                    {
+                        result += args[i].SerializationFriendlyName();
+                        if (i != args.Length - 1)
+                        {
+                            result += "And";
+                        }
+                    }
+
+                    if (args.Length == 2)
+                    {
+                        if (typeof(KeyValuePair<,>).MakeGenericType(args[0], args[1]) == t)
+                        {
+                            result = "NServiceBus." + result;
+                        }
+                    }
+
+                    return result;
                 }
-            }
-
-            var index = t.Name.IndexOf('`');
-            if (index >= 0)
-            {
-                var result = t.Name.Substring(0, index) + "Of";
-                var args = t.GetGenericArguments();
-                for (var i = 0; i < args.Length; i++)
-                {
-                    result += args[i].SerializationFriendlyName();
-                    if (i != args.Length - 1)
-                        result += "And";
-                }
-
-                if (args.Length == 2)
-                    if (typeof(KeyValuePair<,>).MakeGenericType(args) == t)
-                        result = "NServiceBus." + result;
-
-                lock(TypeToNameLookup)  
-                    TypeToNameLookup[t] = result;
-
-                return result;
-            }
-
-            lock(TypeToNameLookup)
-                TypeToNameLookup[t] = t.Name;
-
-            return t.Name;
+                return Type.GetTypeFromHandle(typeHandle).Name;
+            });
         }
-
-        private static readonly byte[] MsPublicKeyToken = typeof(string).Assembly.GetName().GetPublicKeyToken();
 
         static bool IsClrType(byte[] a1)
         {
@@ -113,28 +89,30 @@ namespace NServiceBus.Utils.Reflection
             return structuralEquatable.Equals(MsPublicKeyToken, StructuralComparisons.StructuralEqualityComparer);
         }
 
-        private static readonly ConcurrentDictionary<Type, bool> IsSystemTypeCache = new ConcurrentDictionary<Type, bool>();
-
         public static bool IsSystemType(this Type type)
         {
-            bool result;
-
-            if (!IsSystemTypeCache.TryGetValue(type, out result))
+            if (!IsSystemTypeCache.TryGetValue(type.TypeHandle, out var result))
             {
                 var nameOfContainingAssembly = type.Assembly.GetName().GetPublicKeyToken();
-                IsSystemTypeCache[type] = result = IsClrType(nameOfContainingAssembly);
+                IsSystemTypeCache[type.TypeHandle] = result = IsClrType(nameOfContainingAssembly);
             }
 
             return result;
         }
 
-        public static bool IsNServiceBusMarkerInterface(this Type type)
+        public static bool IsFromParticularAssembly(this Type type)
         {
-            return type == typeof(IMessage) ||
-                   type == typeof(ICommand) ||
-                   type == typeof(IEvent);
+            return type.Assembly.GetName()
+                .GetPublicKeyToken()
+                .SequenceEqual(nsbPublicKeyToken);
         }
 
-        private static readonly IDictionary<Type, string> TypeToNameLookup = new Dictionary<Type, string>();
+        static byte[] MsPublicKeyToken = typeof(string).Assembly.GetName().GetPublicKeyToken();
+
+        static ConcurrentDictionary<RuntimeTypeHandle, bool> IsSystemTypeCache = new ConcurrentDictionary<RuntimeTypeHandle, bool>();
+
+        static ConcurrentDictionary<RuntimeTypeHandle, string> TypeToNameLookup = new ConcurrentDictionary<RuntimeTypeHandle, string>();
+
+        static byte[] nsbPublicKeyToken = typeof(TypeExtensionMethods).Assembly.GetName().GetPublicKeyToken();
     }
 }

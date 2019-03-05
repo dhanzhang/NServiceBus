@@ -1,26 +1,26 @@
 namespace NServiceBus
 {
-    using Config;
     using Installation;
 
     /// <summary>
-    /// Convenience methods for configuring how instances of  <see cref="INeedToInstallSomething"/>s are run.
+    /// Convenience methods for configuring how instances of  <see cref="INeedToInstallSomething" />s are run.
     /// </summary>
-    public static class InstallConfigExtensions
+    public static partial class InstallConfigExtensions
     {
         /// <summary>
-        /// Enable all <see cref="INeedToInstallSomething"/> to run when <see cref="IWantToRunWhenConfigurationIsComplete"/>.
+        /// Enable all <see cref="INeedToInstallSomething" /> to run when the configuration is complete.
         /// </summary>
-        /// <param name="config">The instance of <see cref="Configure"/> to apply these settings to.</param>
-        /// <param name="username">The username to pass to <see cref="INeedToInstallSomething.Install"/></param>
-        public static Configure EnableInstallers(this Configure config, string username = null)
+        /// <param name="config">The <see cref="EndpointConfiguration" /> instance to apply the settings to.</param>
+        /// <param name="username">The username to pass to <see cref="INeedToInstallSomething.Install" />.</param>
+        public static void EnableInstallers(this EndpointConfiguration config, string username = null)
         {
+            Guard.AgainstNull(nameof(config), config);
             if (username != null)
             {
-                config.Settings.Set("installation.userName", username);
+                config.Settings.Set("Installers.UserName", username);
             }
-            config.Features(x => x.Enable<InstallationSupport>());
-            return config;
+
+            config.Settings.Set("Installers.Enable", true);
         }
     }
 }

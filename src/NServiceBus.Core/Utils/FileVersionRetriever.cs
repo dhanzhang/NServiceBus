@@ -10,32 +10,28 @@
     class FileVersionRetriever
     {
         /// <summary>
-        /// Retrieves a semver compliant version from a <see cref="Type"/>.
+        /// Retrieves a semver compliant version from a <see cref="Type" />.
         /// </summary>
-        /// <param name="type"><see cref="Type"/> to retrieve version from.</param>
+        /// <param name="type"><see cref="Type" /> to retrieve version from.</param>
         /// <returns>SemVer compliant version.</returns>
         public static string GetFileVersion(Type type)
         {
-            if (!String.IsNullOrEmpty(type.Assembly.Location))
+            var assembly = type.Assembly;
+            if (!string.IsNullOrEmpty(assembly.Location))
             {
-                var fileVersion = FileVersionInfo.GetVersionInfo(type.Assembly.Location);
+                var fileVersion = FileVersionInfo.GetVersionInfo(assembly.Location);
 
                 return new Version(fileVersion.FileMajorPart, fileVersion.FileMinorPart, fileVersion.FileBuildPart).ToString(3);
             }
 
-            var customAttributes = type.Assembly.GetCustomAttributes(typeof(AssemblyFileVersionAttribute), false);
+            var fileVersionAttribute = assembly.GetCustomAttribute<AssemblyFileVersionAttribute>();
 
-            if (customAttributes.Length >= 1)
+            if (Version.TryParse(fileVersionAttribute.Version, out var version))
             {
-                var fileVersion = (AssemblyFileVersionAttribute)customAttributes[0];
-                Version version;
-                if (Version.TryParse(fileVersion.Version, out version))
-                {
-                    return version.ToString(3);
-                }
+                return version.ToString(3);
             }
 
-            return type.Assembly.GetName().Version.ToString(3);
+            return assembly.GetName().Version.ToString(3);
         }
     }
 }

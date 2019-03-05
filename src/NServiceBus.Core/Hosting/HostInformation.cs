@@ -3,55 +3,54 @@ namespace NServiceBus.Hosting
     using System;
     using System.Collections.Generic;
     using System.Diagnostics;
-    using System.Linq;
-    using System.Text.RegularExpressions;
-    using Utils;
+    using Support;
 
+    /// <summary>
+    /// Provides information about the process hosting this endpoint.
+    /// </summary>
     public class HostInformation
     {
-        public static HostInformation CreateDefault()
+        /// <summary>
+        /// Creates a new instance.
+        /// </summary>
+        /// <param name="hostId">The id of the host.</param>
+        /// <param name="displayName">The display name of the host.</param>
+        public HostInformation(Guid hostId, string displayName)
+            : this(hostId, displayName, new Dictionary<string, string>
+            {
+                {"Machine", RuntimeEnvironment.MachineName},
+                {"ProcessID", Process.GetCurrentProcess().Id.ToString()},
+                {"UserName", Environment.UserName}
+            })
         {
-            var commandLine = Environment.CommandLine;
-
-            return CreateHostInformation(commandLine, Environment.MachineName);
         }
 
-        internal static HostInformation CreateHostInformation(string commandLine, string machineName)
-        {
-            string fullPathToStartingExe;
-
-            if (commandLine.StartsWith("\""))
-            {
-                fullPathToStartingExe = (from Match match in Regex.Matches(commandLine, "\"([^\"]*)\"")
-                    select match.ToString()).First().Trim('"');
-            }
-            else
-            {
-                fullPathToStartingExe = commandLine.Split(' ').First();
-            }
-
-            var hostId = DeterministicGuid.Create(fullPathToStartingExe, machineName);
-
-            return new HostInformation(hostId, machineName, String.Format("{0}", fullPathToStartingExe));
-        }
-
-        public HostInformation(Guid hostId, string displayName, string displayInstanceIdentifier)
+        /// <summary>
+        /// Creates a new instance.
+        /// </summary>
+        /// <param name="hostId">The id of the host.</param>
+        /// <param name="displayName">The display name of the host.</param>
+        /// <param name="properties">A set of properties for the host. This might vary from host to host.</param>
+        public HostInformation(Guid hostId, string displayName, Dictionary<string, string> properties)
         {
             HostId = hostId;
             DisplayName = displayName;
-            DisplayInstanceIdentifier = displayInstanceIdentifier;
-
-            Properties = new Dictionary<string, string>
-            {
-                {"Machine", Environment.MachineName},
-                {"ProcessID", Process.GetCurrentProcess().Id.ToString()},
-                {"UserName", Environment.UserName},
-            };
+            Properties = properties;
         }
 
-        public Guid HostId { get; private set; }
-        public string DisplayName { get; private set; }
-        public string DisplayInstanceIdentifier { get; private set; }
-        public Dictionary<string, string> Properties { get; private set; }
+        /// <summary>
+        /// The unique identifier for this host.
+        /// </summary>
+        public Guid HostId { get; }
+
+        /// <summary>
+        /// The display name of this host.
+        /// </summary>
+        public string DisplayName { get; }
+
+        /// <summary>
+        /// A set of properties for the host. This might vary from host to host.
+        /// </summary>
+        public Dictionary<string, string> Properties { get; }
     }
 }

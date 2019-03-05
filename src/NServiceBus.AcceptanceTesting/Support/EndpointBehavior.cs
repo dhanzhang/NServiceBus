@@ -2,114 +2,42 @@
 {
     using System;
     using System.Collections.Generic;
-    using System.Diagnostics;
-    using System.Threading;
+    using System.Threading.Tasks;
+    using Customization;
+    using NUnit.Framework;
 
-    [Serializable]
-    public class EndpointBehavior : MarshalByRefObject
+    public class EndpointBehavior : IComponentBehavior
     {
         public EndpointBehavior(Type builderType)
         {
             EndpointBuilderType = builderType;
-            CustomConfig = new List<Action<Configure>>();
+            CustomConfig = new List<Action<EndpointConfiguration, ScenarioContext>>();
         }
 
-        public Type EndpointBuilderType { get; private set; }
+        public Type EndpointBuilderType { get; }
 
-        public List<IGivenDefinition> Givens { get; set; }
         public List<IWhenDefinition> Whens { get; set; }
 
-        public List<Action<Configure>> CustomConfig { get; set; }
+        public List<Action<EndpointConfiguration, ScenarioContext>> CustomConfig { get; }
 
-        public string AppConfig { get; set; }
-    }
+        public bool DoNotFailOnErrorMessages { get; set; }
 
-    [Serializable]
-    public class GivenDefinition<TContext> : IGivenDefinition where TContext : ScenarioContext
-    {
-        public GivenDefinition(Action<IBus> action)
+        public async Task<ComponentRunner> CreateRunner(RunDescriptor run)
         {
-            givenAction2 = action;
-        }
+            var endpointName = Conventions.EndpointNamingConvention(EndpointBuilderType);
 
-        public GivenDefinition(Action<IBus, TContext> action)
-        {
-            givenAction = action;
-        }
+            var runner = new EndpointRunner(DoNotFailOnErrorMessages);
 
-        public Action<IBus> GetAction(ScenarioContext context)
-        {
-            if (givenAction2 != null)
-                return bus => givenAction2(bus);
-
-            return bus => givenAction(bus, (TContext)context);
-        }
-
-        readonly Action<IBus, TContext> givenAction;
-        readonly Action<IBus> givenAction2;
-
-    }
-
-    [Serializable]
-    public class WhenDefinition<TContext> : IWhenDefinition where TContext : ScenarioContext
-    {
-        public WhenDefinition(Predicate<TContext> condition, Action<IBus> action)
-        {
-            id = Guid.NewGuid();
-            this.condition = condition;
-            busAction = action;
-        }
-
-        public WhenDefinition(Predicate<TContext> condition, Action<IBus, TContext> actionWithContext)
-        {
-            id = Guid.NewGuid();
-            this.condition = condition;
-            busAndContextAction = actionWithContext;
-        }
-
-        public Guid Id { get { return id; } }
-
-        public bool ExecuteAction(ScenarioContext context, IBus bus)
-        {
-            var c = context as TContext;
-
-            if (!condition(c))
+            try
             {
-                return false;
+                await runner.Initialize(run, this, endpointName).ConfigureAwait(false);
             }
-
-
-            if (busAction != null)
+            catch (Exception)
             {
-                busAction(bus);
+                TestContext.WriteLine($"Endpoint {runner.Name} failed to initialize");
+                throw;
             }
-            else
-            {
-                busAndContextAction(bus, c);
-          
-            }
-
-            Debug.WriteLine("Condition {0} has fired - Thread: {1} AppDomain: {2}", id, Thread.CurrentThread.ManagedThreadId,AppDomain.CurrentDomain.FriendlyName);
-
-            return true;
+            return runner;
         }
-
-        readonly Predicate<TContext> condition;
-        readonly Action<IBus> busAction;
-        readonly Action<IBus, TContext> busAndContextAction;
-        Guid id;
-    }
-
-    public interface IGivenDefinition
-    {
-        Action<IBus> GetAction(ScenarioContext context);
-    }
-
-
-    public interface IWhenDefinition
-    {
-        bool ExecuteAction(ScenarioContext context, IBus bus);
-
-        Guid Id { get; }
     }
 }

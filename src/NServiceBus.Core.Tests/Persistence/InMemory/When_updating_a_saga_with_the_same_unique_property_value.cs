@@ -1,25 +1,33 @@
 namespace NServiceBus.SagaPersisters.InMemory.Tests
 {
     using System;
-    using NServiceBus.InMemory.SagaPersister;
+    using System.Threading.Tasks;
+    using Extensibility;
     using NUnit.Framework;
 
     [TestFixture]
-    public class When_updating_a_saga_with_the_same_unique_property_value
+    class When_updating_a_saga_with_the_same_unique_property_value
     {
         [Test]
-        public void It_should_persist_successfully()
+        public async Task It_should_persist_successfully()
         {
-            var saga1 = new SagaWithUniqueProperty
-                {
-                    Id = Guid.NewGuid(),
-                    UniqueString = "whatever"
-                };
+            var saga1 = new SagaWithUniquePropertyData
+            {
+                Id = Guid.NewGuid(),
+                UniqueString = "whatever"
+            };
+            var persister = new InMemorySagaPersister();
 
-            var inMemorySagaPersister = new InMemorySagaPersister();
-            inMemorySagaPersister.Save(saga1);
-            saga1 = inMemorySagaPersister.Get<SagaWithUniqueProperty>(saga1.Id);
-            inMemorySagaPersister.Update(saga1);
+            var insertSession = new InMemorySynchronizedStorageSession();
+            await persister.Save(saga1, SagaMetadataHelper.GetMetadata<SagaWithUniqueProperty>(saga1), insertSession, new ContextBag());
+            await insertSession.CompleteAsync();
+
+            var updatingContext = new ContextBag();
+            saga1 = await persister.Get<SagaWithUniquePropertyData>(saga1.Id, new InMemorySynchronizedStorageSession(), updatingContext);
+
+            var updateSession = new InMemorySynchronizedStorageSession();
+            await persister.Update(saga1, updateSession, updatingContext);
+            await updateSession.CompleteAsync();
         }
     }
 }

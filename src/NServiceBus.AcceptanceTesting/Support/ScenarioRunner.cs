@@ -1,186 +1,59 @@
-﻿using System.Runtime.Remoting;
-using System.Runtime.Remoting.Lifetime;
-
-namespace NServiceBus.AcceptanceTesting.Support
+﻿namespace NServiceBus.AcceptanceTesting.Support
 {
     using System;
-    using System.Collections.Concurrent;
     using System.Collections.Generic;
     using System.Diagnostics;
+    using System.Globalization;
     using System.Linq;
-    using System.Reflection;
+    using System.Runtime.ExceptionServices;
     using System.Text;
     using System.Threading;
     using System.Threading.Tasks;
-    using Customization;
+    using NUnit.Framework;
 
     public class ScenarioRunner
     {
-        public static IEnumerable<RunSummary> Run(IList<RunDescriptor> runDescriptors, IList<EndpointBehavior> behaviorDescriptors, IList<IScenarioVerification> shoulds, Func<ScenarioContext, bool> done, int limitTestParallelismTo, Action<RunSummary> reports)
+        public static async Task<RunSummary> Run(RunDescriptor runDescriptor, List<IComponentBehavior> behaviorDescriptors, Func<ScenarioContext, Task<bool>> done)
         {
-            var totalRuns = runDescriptors.Count();
+            TestContext.WriteLine("current context: " + runDescriptor.ScenarioContext.GetType().FullName);
+            TestContext.WriteLine("Started test @ {0}", DateTime.Now.ToString(CultureInfo.InvariantCulture));
 
-            var cts = new CancellationTokenSource();
+            var runResult = await PerformTestRun(behaviorDescriptors, runDescriptor, done).ConfigureAwait(false);
 
-            var po = new ParallelOptions
-                {
-                    CancellationToken = cts.Token
-                };
+            TestContext.WriteLine("Finished test @ {0}", DateTime.Now.ToString(CultureInfo.InvariantCulture));
 
-            var maxParallelismSetting = Environment.GetEnvironmentVariable("max_test_parallelism");
-            int maxParallelism;
-            if (int.TryParse(maxParallelismSetting, out maxParallelism))
+            return new RunSummary
             {
-                Console.Out.WriteLine("Parallelism limited to: {0}", maxParallelism);
-
-                po.MaxDegreeOfParallelism = maxParallelism;
-            }
-
-            if (limitTestParallelismTo > 0)
-                po.MaxDegreeOfParallelism = limitTestParallelismTo;
-
-            var results = new ConcurrentBag<RunSummary>();
-
-            try
-            {
-                Parallel.ForEach(runDescriptors, po, runDescriptor =>
-                    {
-                        if (po.CancellationToken.IsCancellationRequested)
-                        {
-                            return;
-                        }
-
-                        Console.Out.WriteLine("{0} - Started @ {1}", runDescriptor.Key, DateTime.Now.ToString());
-
-                        var runResult = PerformTestRun(behaviorDescriptors, shoulds, runDescriptor, done);
-
-                        Console.Out.WriteLine("{0} - Finished @ {1}", runDescriptor.Key, DateTime.Now.ToString());
-
-                        results.Add(new RunSummary
-                            {
-                                Result = runResult,
-                                RunDescriptor = runDescriptor,
-                                Endpoints = behaviorDescriptors
-                            });
-
-
-                        if (runResult.Failed)
-                        {
-                            cts.Cancel();
-                        }
-                    });
-            }
-            catch (OperationCanceledException)
-            {
-                Console.Out.WriteLine("Test run aborted due to test failures");
-            }
-
-            var failedRuns = results.Where(s => s.Result.Failed).ToList();
-
-            foreach (var runSummary in failedRuns)
-            {
-                DisplayRunResult(runSummary, totalRuns);
-            }
-
-            if (failedRuns.Any())
-                throw new AggregateException("Test run failed due to one or more exception", failedRuns.Select(f => f.Result.Exception));
-
-            foreach (var runSummary in results.Where(s => !s.Result.Failed))
-            {
-                DisplayRunResult(runSummary, totalRuns);
-
-                if (reports != null)
-                    reports(runSummary);
-            }
-
-            return results;
+                Result = runResult,
+                RunDescriptor = runDescriptor,
+                Endpoints = behaviorDescriptors
+            };
         }
 
-        static void DisplayRunResult(RunSummary summary, int totalRuns)
-        {
-            var runDescriptor = summary.RunDescriptor;
-            var runResult = summary.Result;
-
-            Console.Out.WriteLine("------------------------------------------------------");
-            Console.Out.WriteLine("Test summary for: {0}", runDescriptor.Key);
-            if (totalRuns > 1)
-                Console.Out.WriteLine(" - Permutation: {0}({1})", runDescriptor.Permutation, totalRuns);
-            Console.Out.WriteLine("");
-
-
-            PrintSettings(runDescriptor.Settings);
-
-            Console.WriteLine("");
-            Console.WriteLine("Endpoints:");
-
-            foreach (var endpoint in runResult.ActiveEndpoints)
-            {
-                Console.Out.WriteLine("     - {0}", endpoint);
-            }
-
-
-            if (runResult.Failed)
-            {
-                Console.Out.WriteLine("Test failed: {0}", runResult.Exception);
-
-                Console.Out.WriteLine("Context:");
-
-                foreach (var prop in runResult.ScenarioContext.GetType().GetProperties())
-                {
-                    Console.Out.WriteLine("{0} = {1}", prop.Name, prop.GetValue(runResult.ScenarioContext, null));
-                }
-            }
-            else
-            {
-                Console.Out.WriteLine("Result: Successful - Duration: {0}", runResult.TotalTime);
-                Console.Out.WriteLine("------------------------------------------------------");
-
-            }
-        }
-
-        static RunResult PerformTestRun(IList<EndpointBehavior> behaviorDescriptors, IList<IScenarioVerification> shoulds, RunDescriptor runDescriptor, Func<ScenarioContext, bool> done)
+        static async Task<RunResult> PerformTestRun(List<IComponentBehavior> behaviorDescriptors, RunDescriptor runDescriptor, Func<ScenarioContext, Task<bool>> done)
         {
             var runResult = new RunResult
-                {
-                    ScenarioContext = runDescriptor.ScenarioContext
-                };
+            {
+                ScenarioContext = runDescriptor.ScenarioContext
+            };
 
             var runTimer = new Stopwatch();
-
             runTimer.Start();
 
             try
             {
-                var runners = InitializeRunners(runDescriptor, behaviorDescriptors);
+                var endpoints = await InitializeRunners(runDescriptor, behaviorDescriptors).ConfigureAwait(false);
 
-                try
-                {
-                    runResult.ActiveEndpoints = runners.Select(r => r.EndpointName).ToList();
+                runResult.ActiveEndpoints = endpoints.Select(r => r.Name);
 
-                    PerformScenarios(runDescriptor, runners, () =>
-                    {
-                        if (!string.IsNullOrEmpty(runDescriptor.ScenarioContext.Exceptions))
-                        {
-                            Console.Out.WriteLine(runDescriptor.ScenarioContext.Exceptions);
-                            throw new Exception("Failures in endpoints");
-                        }
-                        return done(runDescriptor.ScenarioContext);
-                    });
-                }
-                finally
-                {
-                    UnloadAppDomains(runners);
-                }
+                await PerformScenarios(runDescriptor, endpoints, () => done(runDescriptor.ScenarioContext)).ConfigureAwait(false);
 
                 runTimer.Stop();
-
-                Parallel.ForEach(runners, runner => shoulds.Where(s => s.ContextType == runDescriptor.ScenarioContext.GetType()).ToList()
-                                                           .ForEach(v => v.Verify(runDescriptor.ScenarioContext)));
             }
             catch (Exception ex)
             {
                 runResult.Failed = true;
-                runResult.Exception = ex;
+                runResult.Exception = ExceptionDispatchInfo.Capture(ex);
             }
 
             runResult.TotalTime = runTimer.Elapsed;
@@ -188,68 +61,49 @@ namespace NServiceBus.AcceptanceTesting.Support
             return runResult;
         }
 
-        static void UnloadAppDomains(IEnumerable<ActiveRunner> runners)
+
+        static async Task PerformScenarios(RunDescriptor runDescriptor, ComponentRunner[] runners, Func<Task<bool>> done)
         {
-            Parallel.ForEach(runners, runner =>
+            using (var cts = new CancellationTokenSource())
+            {
+                // ReSharper disable once LoopVariableIsNeverChangedInsideLoop
+                try
                 {
-                    try
+                    await StartEndpoints(runners, cts).ConfigureAwait(false);
+                    runDescriptor.ScenarioContext.EndpointsStarted = true;
+                    await ExecuteWhens(runners, cts).ConfigureAwait(false);
+
+                    var startTime = DateTime.UtcNow;
+                    var maxTime = runDescriptor.Settings.TestExecutionTimeout ?? TimeSpan.FromSeconds(90);
+                    while (!await done().ConfigureAwait(false) && !cts.Token.IsCancellationRequested)
                     {
-                        AppDomain.Unload(runner.AppDomain);
+                        if (!Debugger.IsAttached)
+                        {
+                            if (DateTime.UtcNow - startTime > maxTime)
+                            {
+                                throw new TimeoutException(GenerateTestTimedOutMessage(maxTime));
+                            }
+                        }
+
+                        await Task.Yield();
                     }
-                    catch (CannotUnloadAppDomainException ex)
+
+                    startTime = DateTime.UtcNow;
+                    var unfinishedFailedMessagesMaxWaitTime = TimeSpan.FromSeconds(30);
+                    while (runDescriptor.ScenarioContext.UnfinishedFailedMessages.Values.Any(x => x))
                     {
-                        Console.Out.WriteLine("Failed to unload appdomain {0}, reason: {1}", runner.AppDomain.FriendlyName, ex.ToString());
+                        if (DateTime.UtcNow - startTime > unfinishedFailedMessagesMaxWaitTime)
+                        {
+                            throw new Exception("Some failed messages were not handled by the recoverability feature.");
+                        }
+
+                        await Task.Yield();
                     }
-
-                });
-        }
-
-        static IDictionary<Type, string> CreateRoutingTable(RunDescriptor runDescriptor, IEnumerable<EndpointBehavior> behaviorDescriptors)
-        {
-            var routingTable = new Dictionary<Type, string>();
-
-            foreach (var behaviorDescriptor in behaviorDescriptors)
-            {
-                routingTable[behaviorDescriptor.EndpointBuilderType] = GetEndpointNameForRun(runDescriptor, behaviorDescriptor);
-            }
-
-            return routingTable;
-        }
-
-        private static void PrintSettings(IEnumerable<KeyValuePair<string, string>> settings)
-        {
-            Console.WriteLine("");
-            Console.WriteLine("Using settings:");
-            foreach (var pair in settings)
-            {
-                Console.Out.WriteLine("   {0}: {1}", pair.Key, pair.Value);
-            }
-            Console.WriteLine();
-        }
-
-        static void PerformScenarios(RunDescriptor runDescriptor, IEnumerable<ActiveRunner> runners, Func<bool> done)
-        {
-            var endpoints = runners.Select(r => r.Instance).ToList();
-
-            StartEndpoints(endpoints);
-
-            runDescriptor.ScenarioContext.EndpointsStarted = true;
-
-            var startTime = DateTime.UtcNow;
-            var maxTime = runDescriptor.TestExecutionTimeout;
-
-            Task.WaitAll(endpoints.Select(endpoint => Task.Factory.StartNew(() => SpinWait.SpinUntil(done, maxTime))).Cast<Task>().ToArray(), maxTime);
-
-            try
-            {
-                if ((DateTime.UtcNow - startTime) > maxTime)
-                {
-                    throw new ScenarioException(GenerateTestTimedOutMessage(maxTime));
                 }
-            }
-            finally
-            {
-                StopEndpoints(endpoints);
+                finally
+                {
+                    await StopEndpoints(runners).ConfigureAwait(false);
+                }
             }
         }
 
@@ -257,108 +111,91 @@ namespace NServiceBus.AcceptanceTesting.Support
         {
             var sb = new StringBuilder();
 
-            sb.AppendLine(string.Format("The maximum time limit for this test({0}s) has been reached",
-                                        maxTime.TotalSeconds));
+            sb.AppendLine($"The maximum time limit for this test({maxTime.TotalSeconds}s) has been reached");
             sb.AppendLine("----------------------------------------------------------------------------");
 
             return sb.ToString();
         }
 
-        static void StartEndpoints(IEnumerable<EndpointRunner> endpoints)
+        static Task StartEndpoints(IEnumerable<ComponentRunner> endpoints, CancellationTokenSource cts)
         {
-            var tasks = endpoints.Select(endpoint => Task.Factory.StartNew(() =>
-                {
-                    var result = endpoint.Start();
-
-                    if (result.Failed)
-                        throw new ScenarioException("Endpoint failed to start", result.Exception);
-
-                })).ToArray();
-
-            if (!Task.WaitAll(tasks, TimeSpan.FromMinutes(2)))
-                throw new Exception("Starting endpoints took longer than 2 minutes");
+            var startTimeout = TimeSpan.FromMinutes(2);
+            return endpoints.Select(endpoint => StartEndpoint(endpoint, cts))
+                .Timebox(startTimeout, $"Starting endpoints took longer than {startTimeout.TotalMinutes} minutes.");
         }
 
-        static void StopEndpoints(IEnumerable<EndpointRunner> endpoints)
+        static async Task StartEndpoint(ComponentRunner component, CancellationTokenSource cts)
         {
-            var tasks = endpoints.Select(endpoint => Task.Factory.StartNew(() =>
-                {
-
-                    Console.Out.WriteLine("Stopping endpoint: {0}", endpoint.Name());
-                    var sw = new Stopwatch();
-                    sw.Start();
-                    var result = endpoint.Stop();
-
-                    sw.Stop();
-                    if (result.Failed)
-                        throw new ScenarioException("Endpoint failed to stop", result.Exception);
-
-                    Console.Out.WriteLine("Endpoint: {0} stopped ({1}s)", endpoint.Name(), sw.Elapsed);
-
-                })).ToArray();
-
-            if (!Task.WaitAll(tasks, TimeSpan.FromMinutes(2)))
-                throw new Exception("Stopping endpoints took longer than 2 minutes");
-        }
-
-        static List<ActiveRunner> InitializeRunners(RunDescriptor runDescriptor, IList<EndpointBehavior> behaviorDescriptors)
-        {
-            var runners = new List<ActiveRunner>();
-            var routingTable = CreateRoutingTable(runDescriptor, behaviorDescriptors);
-
-            foreach (var behaviorDescriptor in behaviorDescriptors)
+            var token = cts.Token;
+            try
             {
-                var endpointName = GetEndpointNameForRun(runDescriptor, behaviorDescriptor);
-                var runner = PrepareRunner(endpointName, behaviorDescriptor.AppConfig);
-                var result = runner.Instance.Initialize(runDescriptor, behaviorDescriptor, routingTable, endpointName);
+                await component.Start(token).ConfigureAwait(false);
+            }
+            catch (Exception)
+            {
+                cts.Cancel();
+                TestContext.WriteLine($"Endpoint {component.Name} failed to start.");
+                throw;
+            }
+        }
 
-                // Extend the lease to the timeout value specified.
-                var serverLease = (ILease)RemotingServices.GetLifetimeService(runner.Instance);
+        static Task ExecuteWhens(IEnumerable<ComponentRunner> endpoints, CancellationTokenSource cts)
+        {
+            var whenTimeout = TimeSpan.FromSeconds(60);
+            return endpoints.Select(endpoint => ExecuteWhens(endpoint, cts))
+                .Timebox(whenTimeout, $"Executing given and whens took longer than {whenTimeout.TotalSeconds} seconds.");
+        }
 
-                // Add the execution time + additional time for the endpoints to be able to stop gracefully
-                var totalLifeTime = runDescriptor.TestExecutionTimeout.Add(TimeSpan.FromMinutes(2));
-                serverLease.Renew(totalLifeTime);
+        static async Task ExecuteWhens(ComponentRunner component, CancellationTokenSource cts)
+        {
+            var token = cts.Token;
+            try
+            {
+                await component.ComponentsStarted(token).ConfigureAwait(false);
+            }
+            catch (Exception)
+            {
+                cts.Cancel();
+                TestContext.WriteLine($"Whens for endpoint {component.Name} failed to execute.");
+                throw;
+            }
+        }
 
-                if (result.Failed)
+        static Task StopEndpoints(IEnumerable<ComponentRunner> endpoints)
+        {
+            var stopTimeout = TimeSpan.FromMinutes(2);
+            return endpoints.Select(async endpoint =>
+            {
+                await Task.Yield(); // ensure all endpoints are stopped even if a synchronous implementation throws
+                TestContext.WriteLine("Stopping endpoint: {0}", endpoint.Name);
+                var stopwatch = Stopwatch.StartNew();
+                try
                 {
-                    throw new ScenarioException(string.Format("Endpoint {0} failed to initialize", runner.Instance.Name()), result.Exception);
+                    await endpoint.Stop().ConfigureAwait(false);
+                    stopwatch.Stop();
+                    TestContext.WriteLine("Endpoint: {0} stopped ({1}s)", endpoint.Name, stopwatch.Elapsed);
                 }
-
-                runners.Add(runner);
-            }
-
-            return runners;
-        }
-
-        static string GetEndpointNameForRun(RunDescriptor runDescriptor, EndpointBehavior endpointBehavior)
-        {
-            var endpointName = Conventions.EndpointNamingConvention(endpointBehavior.EndpointBuilderType) + "." +
-                               runDescriptor.Key;
-            return endpointName;
-        }
-
-        static ActiveRunner PrepareRunner(string endpointName, string appConfigPath)
-        {
-            var domainSetup = new AppDomainSetup
+                catch (Exception)
                 {
-                    ApplicationBase = AppDomain.CurrentDomain.SetupInformation.ApplicationBase,
-                    LoaderOptimization = LoaderOptimization.SingleDomain
-                };
+                    TestContext.WriteLine($"Endpoint {endpoint.Name} failed to stop.");
+                    throw;
+                }
+            }).Timebox(stopTimeout, $"Stopping endpoints took longer than {stopTimeout.TotalMinutes} minutes.");
+        }
 
-            if (appConfigPath != null)
+        static async Task<ComponentRunner[]> InitializeRunners(RunDescriptor runDescriptor, List<IComponentBehavior> endpointBehaviors)
+        {
+            var runnerInitializations = endpointBehaviors.Select(endpointBehavior => endpointBehavior.CreateRunner(runDescriptor)).ToArray();
+            try
             {
-                domainSetup.ConfigurationFile = appConfigPath;
+                var x = await Task.WhenAll(runnerInitializations).ConfigureAwait(false);
+                return x;
             }
-
-            var appDomain = AppDomain.CreateDomain(endpointName, AppDomain.CurrentDomain.Evidence, domainSetup);
-
-
-            return new ActiveRunner
-                {
-                    Instance = (EndpointRunner)appDomain.CreateInstanceAndUnwrap(Assembly.GetExecutingAssembly().FullName, typeof(EndpointRunner).FullName),
-                    AppDomain = appDomain,
-                    EndpointName = endpointName
-                };
+            catch (Exception e)
+            {
+                TestContext.WriteLine(e);
+                throw;
+            }
         }
     }
 
@@ -366,19 +203,20 @@ namespace NServiceBus.AcceptanceTesting.Support
     {
         public bool Failed { get; set; }
 
-        public Exception Exception { get; set; }
+        public ExceptionDispatchInfo Exception { get; set; }
 
         public TimeSpan TotalTime { get; set; }
 
         public ScenarioContext ScenarioContext { get; set; }
-
 
         public IEnumerable<string> ActiveEndpoints
         {
             get
             {
                 if (activeEndpoints == null)
+                {
                     activeEndpoints = new List<string>();
+                }
 
                 return activeEndpoints;
             }
@@ -394,7 +232,6 @@ namespace NServiceBus.AcceptanceTesting.Support
 
         public RunDescriptor RunDescriptor { get; set; }
 
-        public IEnumerable<EndpointBehavior> Endpoints { get; set; }
+        public IEnumerable<IComponentBehavior> Endpoints { get; set; }
     }
-
 }
